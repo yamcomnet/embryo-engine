@@ -4,6 +4,8 @@ A cellular automata simulation demonstrating how **conservation laws + local sym
 
 Built as a single-file React component with HTML5 Canvas rendering.
 
+**[Try it live](https://yamcomnet.github.io/embryo-engine/)**
+
 ![Embryo Engine](screenshot.png)
 
 ## The Idea
