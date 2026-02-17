@@ -1,5 +1,17 @@
 # Embryo Engine
 
+## Conceptual Framework
+
+This project grew from a thought experiment about the simulation hypothesis:
+
+> If the universe is a computation, organisms inside would experience consistent conservation laws, reproducible chemistry, and evolutionary history. Grid symmetries would appear as fundamental physics to internal observers, not design choices.
+
+The simulation demonstrates this concretely: starting from an energy conservation law (the "physics") and local cell rules (the "chemistry"), complex biological structure emerges without being programmed. The organism doesn't know about germ layers or tissue types — it just follows three rules, and gastrulation happens.
+
+This relationship between **global symmetry → conservation law → local breaking → emergent complexity** is, arguably, the deepest pattern in nature. The Embryo Engine is a minimal demonstration of that pattern.
+
+---
+
 A cellular automata simulation demonstrating how **conservation laws + local symmetry breaking → emergent biological structure**. Starting from ~30 identical stem cells, the system self-organizes into a layered organism with seven distinct tissue types — no central controller, no hardcoded body plan.
 
 Built as a single-file React component with HTML5 Canvas rendering.
@@ -147,16 +159,6 @@ This simulation went through 9 major iterations to get the energy model right:
 | v0.9 | All 7 types, 100% conservation | BFS depth for layering, isolation pressure for compaction |
 
 The key insight at each stage: **every energy flow must have a destination**. Metabolism that vanishes, death waste that disappears, substrate that diffuses into empty space — all of these are invisible leaks that eventually drain the system. The final architecture has literally zero sinks.
-
-## Conceptual Framework
-
-This project grew from a thought experiment about the simulation hypothesis:
-
-> If the universe is a computation, organisms inside would experience consistent conservation laws, reproducible chemistry, and evolutionary history. Grid symmetries would appear as fundamental physics to internal observers, not design choices.
-
-The simulation demonstrates this concretely: starting from an energy conservation law (the "physics") and local cell rules (the "chemistry"), complex biological structure emerges without being programmed. The organism doesn't know about germ layers or tissue types — it just follows three rules, and gastrulation happens.
-
-This relationship between **global symmetry → conservation law → local breaking → emergent complexity** is, arguably, the deepest pattern in nature. The Embryo Engine is a minimal demonstration of that pattern.
 
 ## Running
 
