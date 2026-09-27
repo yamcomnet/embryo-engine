@@ -9,6 +9,7 @@ import {
   N, VIEWS, VIEW_INDEX, SPEEDS, DEFAULT_SPEED_INDEX, CAMERA_PRESETS, QUALITY_MODES, MSG, MILESTONES, TISSUE_HEX, viewIdFrom,
 } from './shared.js';
 import { TIERS } from './scene/quality.js';   // pure data (no three): the tiers' DPR caps and floors
+import { orbitTurning, orbitIdleReason } from './ui/dock.js';   // the dock's Orbit button and the stage agree on it
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('stage'), labelsRoot = $('labels'), hudRoot = $('hud');
@@ -202,8 +203,13 @@ export function reduce(s, a) {
       else if (s.hover !== null) set({ hover: null });
       break;
     case 'reducedMotion': set({ reducedMotion: !!a.on }); break;
-    // polish: turntable orbit toggle (O); the stage turns only while running, untouched, without reduced motion
-    case 'toggleTurntable': set({ turntable: !s.turntable }); fx.push(['hint', `Turntable ${s.turntable ? 'off' : 'on'}`]); break;
+    // turntable orbit (O, or the dock's Orbit): the stage turns only while running, following, live, in motion, not in Map
+    case 'toggleTurntable': {
+      set({ turntable: !s.turntable });
+      const why = orbitIdleReason(s);                        // on, but idle: say when it will turn
+      fx.push(['hint', s.turntable ? `Orbit on${why ? ` · ${why[0].toLowerCase() + why.slice(1)}` : ''}` : 'Orbit off']);
+      break;
+    }
     case 'share': fx.push(['share']); break;
     default: break;
   }
@@ -299,8 +305,7 @@ function syncStage(a, b, all) {
   if (ch('autoFrame')) stage.setAutoFrame(b.autoFrame);
   if (ch('hover') || ch('pinned')) stage.setHighlight({ hover: b.hover, pinned: b.pinned });
   if (ch('reducedMotion')) stage.setReducedMotion(b.reducedMotion);
-  const turning = (x) => !!(x.turntable && x.running && x.autoFrame && !x.viewing && !x.reducedMotion);   // polish
-  if (all || turning(a) !== turning(b)) stage.setTurntable?.(turning(b));
+  if (all || orbitTurning(a) !== orbitTurning(b)) stage.setTurntable?.(orbitTurning(b));
   if (all || a.quality.tier !== b.quality.tier || a.quality.mode !== b.quality.mode) {
     if (quality.dprOverridden) { stage.setQuality({ tier: b.quality.tier, dpr: null }); quality.dprOverridden = false; }
     else stage.setQuality(b.quality.tier);

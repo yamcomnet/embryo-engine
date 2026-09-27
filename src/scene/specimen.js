@@ -399,7 +399,9 @@ export function createSpecimen(renderer, { cellTextures, displayUniforms, cellUn
           it.edge.geometry = new TorusGeometry(r, 0.22, 8, 192);
           it.builtR = r;
         }
-        it.edge.scale.setScalar(1);
+        // in between, scale the ring in its plane: it follows the disc every frame instead of jumping at a rebuild
+        const s = r / it.builtR;
+        it.edge.scale.set(s, s, 1);
         it.glass.uniforms.uA.value = a;
         it.edgeMat.opacity = a;
       }

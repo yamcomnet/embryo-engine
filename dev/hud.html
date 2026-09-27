@@ -39,7 +39,7 @@
 <div id="hud"></div>
 <script type="module">
 // HUD harness: the real HUD (src/ui) driven by dev/mock-frames.js, with a dev reducer standing in for main.js.
-// URL params: cells tick seed run view apart iso cam viewing(milestone key | kf) pin hover(idx|auto) help progress(0..1)
+// URL params: cells tick seed run view apart iso cam follow orbit viewing(milestone key | kf) pin hover(idx|auto) help progress(0..1)
 //             fallback(reason) error(msg) hint(text) lost(amount) rm ready(0) speed quality panel(0) labels(0) w h
 import {
   makeMockFrame, makeMockStats, makeMockMilestones, makeMockThumbTypes, makeMockCellDetail, makeMockReady,
@@ -78,7 +78,7 @@ let state = {
   params: PARAMS, fieldInfo: FIELD_INFO,
   running: q.get('run') === '1', speedIndex: num('speed', 3), tps: { target: 60, actual: 58 },
   view: q.get('view') || 'cells', isolate: q.has('iso') ? num('iso', null) : null, exploded: q.get('apart') === '1',
-  camera: q.get('cam') || 'specimen', autoFrame: q.get('follow') !== '0',
+  camera: q.get('cam') || 'specimen', autoFrame: q.get('follow') !== '0', turntable: q.get('orbit') !== '0',
   viewing: null, milestones: [], snapshots: [],
   hover: null, pinned: null,
   quality: { mode: q.get('quality') || 'auto', tier: 'medium', dpr: 1.5 }, reducedMotion: q.get('rm') === '1',
@@ -155,6 +155,7 @@ function dispatch(a) {
     case 'camera': return setState({ camera: a.preset, autoFrame: true });
     case 'cycleCamera': return setState({ camera: CAMERA_PRESETS[(CAMERA_PRESETS.indexOf(s.camera) + 1) % CAMERA_PRESETS.length] });
     case 'frame': return setState({ autoFrame: true });
+    case 'toggleTurntable': return setState({ turntable: !s.turntable });
     case 'orbit': case 'zoom': return setState({ autoFrame: false });
     case 'milestone': { const m = s.milestones.find((x) => x.key === a.key); if (m && m.snapId) return view(m.snapId); return; }
     case 'viewSnapshot': return view(a.snapId);

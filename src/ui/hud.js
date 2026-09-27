@@ -17,6 +17,7 @@ import { createNarrator, narrateContext, milestoneLine, milestoneNote, cellStory
 import { fmtInt, fmtPct, fmtE, fmtSig, fmtTick, fmtSpeed, fmtX, numberWord } from './format.js';
 import { RAMPS, BAND_HEX, rampCss, previewCss, fieldPos } from './ramps.js';
 import { KEY_HELP } from './keys.js';
+import { dockModel, apartHintDue } from './dock.js';
 
 const { STEM, ECTO, MESO, ENDO, NEURAL, MUSCLE, VESSEL } = TYPE;
 const MOBILE_MQ = '(max-width: 759px), (max-height: 499px) and (pointer: coarse)';
@@ -40,6 +41,13 @@ const ICON = {
   share: '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6.6 9.4l2.8-2.8"/><path d="M8.6 4.4l1.2-1.2a2.3 2.3 0 0 1 3.2 3.2l-1.2 1.2"/><path d="M7.4 11.6l-1.2 1.2a2.3 2.3 0 0 1-3.2-3.2l1.2-1.2"/></svg>',
   close: '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
   more: '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4-4 4 4"/></svg>',
+  // scene dock: stacked plates, a 3/4 dome, a loupe, a top-down grid, an orbit ring, focus corners
+  apart: '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.9l5.9 2.7L8 7.3 2.1 4.6z"/><path d="M2.1 8.1L8 10.8l5.9-2.7"/><path d="M2.1 11.4L8 14.1l5.9-2.7"/></svg>',
+  specimen: '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10.3C2 6.5 4.7 3.9 8 3.9s6 2.6 6 6.4"/><path d="M2 10.3a6 2.3 0 0 0 12 0"/><path d="M3.6 7.4a4.6 1.5 0 0 0 8.8 0" stroke-width="1.1" opacity=".75"/></svg>',
+  close: '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.9" cy="6.9" r="4.4"/><path d="M10.2 10.2l3.6 3.6"/><circle cx="6.9" cy="6.9" r="1.4" fill="currentColor" stroke="none"/></svg>',
+  map: '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2.3" y="2.3" width="11.4" height="11.4" rx="1.6"/><path d="M2.3 8h11.4M8 2.3v11.4" stroke-width="1.1"/></svg>',
+  orbit: '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12.4 5.6c1.1.6 1.7 1.4 1.7 2.3 0 1.9-2.7 3.4-6.1 3.4S1.9 9.8 1.9 7.9 4.6 4.5 8 4.5"/><path d="M6.6 2.9l1.7 1.6-1.7 1.6"/><circle cx="8" cy="7.9" r="1.4" fill="currentColor" stroke="none"/></svg>',
+  frame: '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.3 5.6V2.3h3.3M10.4 2.3h3.3v3.3M13.7 10.4v3.3h-3.3M5.6 13.7H2.3v-3.3"/><circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none"/></svg>',
 };
 
 // ─── tiny DOM helpers ────────────────────────────────────────────────────────────────────────────────
@@ -202,7 +210,7 @@ export function createHud(root, { dispatch } = {}) {
   // not a landmark of its own: its two sections are already the named regions "Specimen log" and "Composition"
   const leftCard = h('div', { class: 'ee-card ee-left' }, logSec, legendSec);
 
-  // ─── stains rail, layers, camera ─────────────────────────────────────────────────────────────────────
+  // ─── stains rail ─────────────────────────────────────────────────────────────────────────────────────
   const STAIN_TITLE = { ap: 'Anterior–posterior (head–tail) signal' };
   const stainBtns = VIEWS.map((v) => h('button', {
     class: 'ee-stain', type: 'button', role: 'radio', 'aria-checked': 'false', tabindex: '-1', 'aria-keyshortcuts': v.key,
@@ -217,23 +225,56 @@ export function createHud(root, { dispatch } = {}) {
   roving(stainGroup, '.ee-stain', { select: (b) => send({ type: 'view', id: b.dataset.view }) });
   const stainsBlock = h('div', { class: 'ee-block ee-block--stains' }, head('Stains', 'ee-stains-h', h('kbd', { class: 'ee-head__aside', 'aria-hidden': 'true' }, '1–8')), stainGroup);
 
-  const segBtn = (label, data, onclick) => h('button', { class: 'ee-seg__b', type: 'button', role: 'radio', 'aria-checked': 'false', tabindex: '-1', dataset: data, onclick },
-    h('i', { class: 'ee-radio', 'aria-hidden': 'true' }), h('span', {}, label));
-  const layerBtns = [
-    segBtn('Together', { on: '0' }, () => send({ type: 'explode', on: false })),
-    segBtn('Apart', { on: '1' }, () => send({ type: 'explode', on: true })),
-  ];
-  const layerGroup = h('div', { class: 'ee-seg', role: 'radiogroup', 'aria-labelledby': 'ee-layers-h' }, layerBtns);
-  roving(layerGroup, '.ee-seg__b', { select: (b) => send({ type: 'explode', on: b.dataset.on === '1' }) });
-  const layersBlock = h('div', { class: 'ee-block' }, head('Layers', 'ee-layers-h', h('kbd', { class: 'ee-head__aside', 'aria-hidden': 'true' }, 'X')), layerGroup);
+  const rail = h('section', { class: 'ee-card ee-rail', 'aria-labelledby': 'ee-stains-h' }, stainsBlock);
 
-  const camBtns = CAMERA_PRESETS.map((p) => segBtn(CAMERA_LABEL[p] ?? p, { preset: p }, () => send({ type: 'camera', preset: p })));
-  const camGroup = h('div', { class: 'ee-seg ee-seg--3', role: 'radiogroup', 'aria-labelledby': 'ee-camera-h' }, camBtns);
-  roving(camGroup, '.ee-seg__b', { select: (b) => send({ type: 'camera', preset: b.dataset.preset }) });
-  const reframe = h('button', { class: 'ee-link', type: 'button', hidden: true, 'aria-keyshortcuts': 'F', onclick: () => send({ type: 'frame' }) }, 'Re-frame and follow ', h('kbd', { 'aria-hidden': 'true' }, 'F'));
-  const cameraBlock = h('div', { class: 'ee-block' }, head('Camera', 'ee-camera-h', h('kbd', { class: 'ee-head__aside', 'aria-hidden': 'true' }, 'C')), camGroup, reframe);
-
-  const rail = h('section', { class: 'ee-card ee-rail', 'aria-label': 'Display: stains, layers and camera' }, stainsBlock, layersBlock, cameraBlock);
+  // ─── scene dock: layers, camera, orbit, frame ────────────────────────────────────────────────────────
+  // The scene's own controls float over the 3D view, where the eye already is (one home each: they are nowhere
+  // else). Desktop: one row above the transport, centred on the free view; phones: above the collapsed sheet (hidden
+  // while the drawer or the inspector sheet is up); phone landscape: in the sheet's chip row, beside the stains, so
+  // nothing covers the short specimen band. A toolbar: one Tab stop, ←/→ Home/End move along it, Space/Enter
+  // press. Moving never changes the camera (a radio is checked by pressing it, not by passing over it).
+  const keyTitle = (what, key) => (TOUCH ? what : `${what} · ${key}`);
+  const dockBtn = (cls, icon, label, attrs, onclick) => h('button', { class: `ee-dock__b ${cls}`, type: 'button', tabindex: '-1', ...attrs, onclick },
+    h('span', { class: 'ee-dock__i', html: icon }), h('span', { class: 'ee-dock__l' }, label));
+  const dockApart = dockBtn('ee-dock__b--apart', ICON.apart, 'Apart',
+    { 'aria-pressed': 'false', 'aria-keyshortcuts': 'X', title: keyTitle('Apart: lift the germ layers onto their own plates', 'X') },
+    () => send({ type: 'toggleExplode' }));
+  const CAM_TITLE = { specimen: 'Specimen: a 3/4 view of the dome', close: 'Close: macro, low over the tissue', map: 'Map: flat, from straight above' };
+  const camBtns = CAMERA_PRESETS.map((p) => dockBtn('ee-dock__b--cam', ICON[p] ?? ICON.specimen, CAMERA_LABEL[p] ?? p,
+    { role: 'radio', 'aria-checked': 'false', title: keyTitle(CAM_TITLE[p] ?? p, 'C cycles'), dataset: { preset: p } },
+    () => send({ type: 'camera', preset: p })));
+  const camGroup = h('div', { class: 'ee-dock__cams', role: 'radiogroup', 'aria-label': 'Camera', 'aria-keyshortcuts': 'C' }, camBtns);
+  const ORBIT_TITLE = keyTitle('Orbit: turn slowly while the run plays', 'O');
+  const dockOrbit = dockBtn('ee-dock__b--orbit', ICON.orbit, 'Orbit', { 'aria-pressed': 'false', 'aria-keyshortcuts': 'O', title: ORBIT_TITLE },
+    () => send({ type: 'toggleTurntable' }));
+  // Frame (as in 3D tools: frame the subject): only once the user has moved the camera. It comes and goes, so it
+  // lives on a small plate of its own, out of the row's flow: showing it never moves the other buttons under a
+  // finger (desktop: beside the dock; phone portrait: above its right end; phone landscape: at the dock's left end,
+  // which grows into the stains while the dock's own buttons stay put). Still a child of the toolbar for ←/→.
+  const dockFrame = dockBtn('ee-dock__b--frame', ICON.frame, 'Frame', { hidden: true, 'aria-keyshortcuts': 'F', title: keyTitle('Frame the organism and follow it again', 'F') },
+    () => send({ type: 'frame' }));
+  const dockFloat = h('span', { class: 'ee-dock__float', hidden: true }, dockFrame);
+  const dockSep = () => h('i', { class: 'ee-dock__sep', 'aria-hidden': 'true' });
+  const dockBar = h('div', { class: 'ee-dock__bar', role: 'toolbar', 'aria-label': 'Layers, camera and orbit' },
+    dockApart, dockSep(), camGroup, dockSep(), dockOrbit, dockFloat);
+  // no landmark of its own: the toolbar's name is the one a screen reader needs (a named region around it said it twice)
+  const dock = h('div', { class: 'ee-card ee-dock' }, dockBar);
+  const dockItems = [dockApart, ...camBtns, dockOrbit, dockFrame];
+  dockApart.tabIndex = 0;
+  roving(dockBar, '.ee-dock__b', { keys: 'h' });
+  // the toolbar's Tab stop is the control used last (focus by click or by arrows)
+  listen(dockBar, 'focusin', (e) => {
+    const b = e.target.closest?.('.ee-dock__b');
+    if (b) for (const x of dockItems) if (x.tabIndex !== (x === b ? 0 : -1)) x.tabIndex = x === b ? 0 : -1;
+  });
+  // Frame hides once pressed: its Tab stop, and the focus if it had it, go to the chosen camera preset
+  function syncDockTab(lost = false) {
+    const cur = dockItems.find((b) => b.tabIndex === 0);
+    if (cur && !cur.hidden && !lost) return;
+    const next = camBtns.find((b) => b.getAttribute('aria-checked') === 'true') ?? dockApart;
+    for (const b of dockItems) if (b.tabIndex !== (b === next ? 0 : -1)) b.tabIndex = b === next ? 0 : -1;
+    if (lost) next.focus({ preventScroll: true });
+  }
 
   // ─── transport ───────────────────────────────────────────────────────────────────────────────────────
   const btn = (cls, label, icon, onclick, extra = {}) => h('button', { class: `ee-btn ${cls}`, type: 'button', 'aria-label': label, title: extra.title ?? label, html: icon, onclick, ...extra.attrs });
@@ -295,11 +336,15 @@ export function createHud(root, { dispatch } = {}) {
     h('button', { class: 'ee-action', type: 'button', 'aria-haspopup': 'dialog', onclick: () => send({ type: 'help', open: true }) }, h('span', { class: 'ee-action__q', 'aria-hidden': 'true' }, '?'), 'Guide and settings'),
     h('button', { class: 'ee-action', type: 'button', onclick: () => send({ type: 'share' }) }, 'Copy link'));
   const drawer = h('div', { class: 'ee-drawer', id: 'ee-drawer', hidden: true });
-  listen(moreBtn, 'click', () => {
-    const on = drawer.hidden;
+  function setDrawer(on) {
     show(drawer, on);
     setAttr(moreBtn, 'aria-expanded', on);
     toggle(transport, 'is-open', on);
+    toggle(hud, 'is-drawer', on);    // phones: the scene dock steps aside while the sheet is expanded
+  }
+  listen(moreBtn, 'click', () => {
+    const on = drawer.hidden;
+    setDrawer(on);
     if (on) setLogExpanded(false);   // the expanded log would sit over the drawer
   });
 
@@ -429,33 +474,55 @@ export function createHud(root, { dispatch } = {}) {
   // ─── assemble + responsive re-flow ───────────────────────────────────────────────────────────────────
   const top = h('div', { class: 'ee-top' }, title);
   const col = h('div', { class: 'ee-col' }, top, leftCard);
-  // DOM (and Tab) order follows the screen: title and log, then the viewing banner and progress at top centre, then
-  // the rail and the transport
-  hud.append(col, banner, progress, rail, transport, toast, insp, pop, live1, overlay, dialog);
+  // DOM (and Tab) order follows the screen, top to bottom: title and log, the viewing banner and progress at top
+  // centre, the stains rail, the scene dock (it floats just above the transport), then the transport. The dock keeps
+  // the Tab position the layers and camera had in the rail, right after the stains.
+  hud.append(col, banner, progress, rail, dock, transport, toast, insp, pop, live1, overlay, dialog);
+
+  // The dock floats just above the transport, whose height depends on fonts and layout: a ResizeObserver hands it
+  // over as --tp-h (only when it changes; nothing is measured per frame).
+  let tpH = 0;
+  const tpRO = typeof ResizeObserver === 'function' ? new ResizeObserver((es) => {
+    const e = es[es.length - 1];
+    const hgt = Math.round(e.borderBoxSize?.[0]?.blockSize ?? e.target.offsetHeight);
+    if (hgt > 0 && hgt !== tpH) { tpH = hgt; hud.style.setProperty('--tp-h', `${hgt}px`); }
+  }) : null;
+  if (tpRO) { tpRO.observe(transport); cleanups.push(() => tpRO.disconnect()); }
 
   const mq = window.matchMedia(MOBILE_MQ);
   const mqShort = window.matchMedia('(max-height: 499px)');
-  let mobile = null;
+  let mobile = null, dockInSheet = null;
   function layout() {
-    toggle(hud, 'is-short', mqShort.matches);
+    const short = mqShort.matches;
+    toggle(hud, 'is-short', short);
     const m = mq.matches;
+    // phone landscape: the specimen band between the top bar and the sheet is too short to float anything over; the
+    // dock joins the sheet's chip row, after the stains
+    const inSheet = m && short;
+    if (inSheet !== dockInSheet) {
+      dockInSheet = inSheet;
+      if (inSheet) chips.append(dock); else transport.before(dock);
+      // DOM order is the visual order (for ←/→ and a screen reader): Frame opens the inline dock, and closes the floating one
+      if (inSheet) dockBar.prepend(dockFloat); else dockBar.append(dockFloat);
+      toggle(dock, 'is-inline', inSheet);
+      panelRects = null;
+    }
     if (m === mobile) return;
     mobile = m;
     toggle(hud, 'is-mobile', m);
     setAttr(transport, 'aria-label', m ? TRANSPORT_LABEL_M : TRANSPORT_LABEL);
     if (m) {
       top.append(logSec, banner, progress);
-      chips.append(stainGroup);
-      drawer.append(drawerActs, legendSec, layersBlock, cameraBlock);   // the guide first, then the colour key
+      chips.prepend(stainGroup);
+      drawer.append(drawerActs, legendSec);   // the guide first, then the colour key
       show(leftCard, false); show(rail, false);
     } else {
       leftCard.append(logSec, legendSec);
       rail.before(banner, progress);
       stainsBlock.append(stainGroup);
-      rail.append(stainsBlock, layersBlock, cameraBlock);
       drawerActs.remove();
       show(leftCard, true); show(rail, true);
-      show(drawer, false); setAttr(moreBtn, 'aria-expanded', false); toggle(transport, 'is-open', false);
+      setDrawer(false);
       setLogExpanded(false);
     }
     plateSize = null; panelRects = null;
@@ -544,17 +611,30 @@ export function createHud(root, { dispatch } = {}) {
       barSegs.forEach((s, i) => toggle(s, 'is-dim', st.isolate >= 1 && ORDER[i] !== st.isolate));
     }
 
-    // layers + camera
-    if (changed('exploded', !!st.exploded)) {
-      layerBtns.forEach((b) => setAttr(b, 'aria-checked', (b.dataset.on === '1') === !!st.exploded));
-      syncRoving(layerBtns, st.exploded ? 1 : 0);
+    // scene dock (attributes change only with the state they show)
+    const dm = dockModel(st);
+    if (changed('dApart', dm.apart)) {
+      setAttr(dockApart, 'aria-pressed', dm.apart);
+      if (dm.apart) apartUsed();
     }
-    if (changed('camera', st.camera)) {
-      const ci = CAMERA_PRESETS.indexOf(st.camera);
-      camBtns.forEach((b, i) => setAttr(b, 'aria-checked', i === ci));
-      syncRoving(camBtns, ci);
+    if (dm.apart || st.reducedMotion) toggle(dockApart, 'is-beckon', false);   // pressed, or motion off: the glow stops
+    if (changed('dCam', dm.camera)) camBtns.forEach((b) => setAttr(b, 'aria-checked', b.dataset.preset === dm.camera));
+    if (changed('dOrbit', dm.orbit)) setAttr(dockOrbit, 'aria-pressed', dm.orbit);
+    // on, but not turning now (paused, a snapshot, the camera taken, Map, reduced motion): a quieter mark, and why
+    if (changed('dOrbitIdle', dm.orbitIdle ? dm.orbitNote || 'idle' : '')) {
+      toggle(dockOrbit, 'is-idle', dm.orbitIdle);
+      if (dm.orbitIdle && dm.orbitNote) dockOrbit.setAttribute('aria-description', dm.orbitNote);
+      else dockOrbit.removeAttribute('aria-description');
+      dockOrbit.title = dm.orbitIdle && dm.orbitNote ? `${ORBIT_TITLE} (${dm.orbitNote[0].toLowerCase() + dm.orbitNote.slice(1)})` : ORBIT_TITLE;
     }
-    show(reframe, st.autoFrame === false);
+    if (changed('dFrame', dm.frame)) {
+      const hadFocus = document.activeElement === dockFrame;   // hiding it blurs it at once
+      show(dockFrame, dm.frame); show(dockFloat, dm.frame);
+      toggle(hud, 'is-framing', dm.frame);                     // phone portrait: the hint pill steps above Frame's plate
+      panelRects = null;
+      syncDockTab(hadFocus && !dm.frame);
+    }
+    maybeApartHint();
 
     // viewing banner
     const v = st.viewing;
@@ -1096,11 +1176,19 @@ export function createHud(root, { dispatch } = {}) {
     // phones: the viewing banner already names the milestone; never cover its Back to live / Resume buttons
     if (mobile && !banner.hidden) {
       const bb = banner.getBoundingClientRect();
-      if (topPx < bb.bottom && topPx + ph > bb.top) { show(pop, false); return; }
+      if (topPx < bb.bottom && topPx + ph > bb.top) { hidePop(); return; }
     }
     pop.style.left = `${left}px`;
     pop.style.top = `${topPx}px`;
     pop.style.setProperty('--arrow', `${a.left + a.width / 2 - left}px`);
+    // The popover opens right over the floating dock: the dock fades out underneath (keeping its rect, so the framing
+    // holds still) rather than show through the plate or take a tap meant for the popover
+    const over = (el) => {
+      if (el.hidden) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && left < r.right && left + pw > r.left && topPx < r.bottom && topPx + ph > r.top;
+    };
+    toggle(hud, 'is-pop', (!dockInSheet && over(dock)) || over(dockFloat));
   }
 
   function showPop(anchorEl, m) {
@@ -1143,7 +1231,7 @@ export function createHud(root, { dispatch } = {}) {
     pop.replaceChildren(h('div', { class: 'ee-pop__body' }, h('div', { class: 'ee-pop__row' }, h('b', { class: 'ee-pop__t' }, 'Still to come')), list));
     placePop(tlAwait);
   }
-  function hidePop() { show(pop, false); }
+  function hidePop() { show(pop, false); toggle(hud, 'is-pop', false); }
 
   // ─── stats line ──────────────────────────────────────────────────────────────────────────────────────
   function updateStatLine(s) {
@@ -1246,7 +1334,7 @@ export function createHud(root, { dispatch } = {}) {
   function setInspector(detail, anchor) {
     inspDetail = detail || null;
     inspAnchor = anchor || null;
-    if (!inspDetail) { show(insp, false); return; }
+    if (!inspDetail) { show(insp, false); toggle(hud, 'is-insp', false); return; }
     const d = inspDetail;
     const P = st.params || {};
     setText(iType, TYPE_NAMES[d.type] ?? '—');
@@ -1280,6 +1368,7 @@ export function createHud(root, { dispatch } = {}) {
     toggle(insp, 'is-pinned', pinned);
     if (mobile && insp.hidden) setLogExpanded(false);   // the plate and the expanded log would stack on a phone
     show(insp, true);
+    toggle(hud, 'is-insp', true);                        // phones: the plate takes the scene dock's place
     plateSize = null;
     placeInspector();
   }
@@ -1313,11 +1402,15 @@ export function createHud(root, { dispatch } = {}) {
     plate.style.bottom = '';
     if (!plateSize) plateSize = { w: plate.offsetWidth || 300, h: plate.offsetHeight || 180 };
     const pw = plateSize.w, ph = plateSize.h;
+    // the scene dock (and Frame's plate beside it) floats above the transport: a plate over their columns keeps above
+    const floors = [rectOf('dock'), rectOf('frame')].filter((r) => r.width > 0);
+    const floorFor = (x0, x1, limit) => floors.reduce((m, r) => (x0 < r.right + 8 && x1 > r.left - 8 ? Math.min(m, r.top - 12) : m), limit);
     if (!a || a.visible === false) {
       // anchor off screen: dock above the rail's bottom-right corner, no leader
       leader.style.display = 'none';
-      plate.style.left = `${vw - pw - 28}px`;
-      plate.style.top = `${Math.max(12, rectOf('transport').top - ph - 16)}px`;
+      const x0 = vw - pw - 28;
+      plate.style.left = `${x0}px`;
+      plate.style.top = `${Math.max(12, floorFor(x0, x0 + pw, rectOf('transport').top - 16) - ph)}px`;
       return;
     }
     leader.style.display = '';
@@ -1339,8 +1432,9 @@ export function createHud(root, { dispatch } = {}) {
     const px = ex + sx * Hs;
     let left = sx > 0 ? px : px - pw;
     left = Math.max(Math.min(minX, vw - pw - 12), Math.min(Math.max(maxX - pw, 12), left));
+    const top = Math.max(12, Math.min(topPx, floorFor(left, left + pw, bottomLimit) - ph));
     plate.style.left = `${left}px`;
-    plate.style.top = `${topPx}px`;
+    plate.style.top = `${top}px`;
     const endX = sx > 0 ? left : left + pw;
     leaderLine.setAttribute('points', `${a.x},${a.y} ${ex},${ey} ${endX},${ey}`);
     leaderDot.setAttribute('cx', a.x); leaderDot.setAttribute('cy', a.y);
@@ -1366,10 +1460,52 @@ export function createHud(root, { dispatch } = {}) {
     }, 600);
   }
 
-  function setHint(text, ms = 6000) {
+  // Once per viewer, when the Four layers milestone has been reached: the Apart button glows softly for a few seconds
+  // (no glow under reduced motion) and the hint pill says what it does. It waits for any other hint to finish and
+  // for a phone's dock to be in view; it never shows over a snapshot, a fast-forward or the guide, and never once
+  // Apart has been used in this browser.
+  const APART_KEY = 'ee.hint.apart';
+  let apartSeen = false;
+  try { apartSeen = localStorage.getItem(APART_KEY) === '1'; } catch { apartSeen = false; }
+  let apartTimer = 0, beckonTimer = 0, hintUntil = 0;
+  function apartUsed() {
+    if (apartSeen) return;
+    apartSeen = true;
+    clearTimeout(apartTimer); apartTimer = 0;
+    try { localStorage.setItem(APART_KEY, '1'); } catch { /* private mode: it may show again next visit */ }
+  }
+  const dockHidden = () => mobile && !dockInSheet && (hud.classList.contains('is-drawer') || hud.classList.contains('is-insp'));
+  function maybeApartHint() {
+    if (apartSeen || apartTimer || !apartHintDue(st, apartSeen)) return;
+    apartTimer = setTimeout(fireApartHint, Math.max(900, hintUntil - performance.now() + 600));
+  }
+  function fireApartHint() {
+    apartTimer = 0;
+    if (!apartHintDue(st, apartSeen)) return;         // a snapshot, a fast-forward or the guide came up: the next render retries
+    const busy = hintUntil - performance.now();
+    if (busy > 0 || dockHidden()) { apartTimer = setTimeout(fireApartHint, Math.max(1500, busy + 600)); return; }
+    apartUsed();
+    setHint(TOUCH ? 'Try Apart: lift the germ layers onto their own plates' : 'Try Apart (X): lift the germ layers onto their own plates', 7000, { near: 'dock' });
+    if (!st.reducedMotion) {
+      toggle(dockApart, 'is-beckon', true);
+      clearTimeout(beckonTimer);
+      beckonTimer = setTimeout(() => toggle(dockApart, 'is-beckon', false), 5600);
+    }
+  }
+
+  // `near: 'dock'` sets the pill just above the scene dock (desktop; on a phone every pill already sits there)
+  function setHint(text, ms = 6000, { near = null } = {}) {
     lastHintAt = performance.now();
+    hintUntil = !text ? 0 : ms > 0 ? lastHintAt + ms + 260 : Infinity;
     clearTimeout(toastTimer);
     if (!text) { toggle(toast, 'is-in', false); show(toast, false); return; }
+    const atDock = near === 'dock';
+    if (toast.classList.contains('is-dock') !== atDock) {
+      // it moves to another place: fade in there afresh rather than jump across the screen
+      toggle(toast, 'is-in', false);
+      toggle(toast, 'is-dock', atDock);
+      if (!toast.hidden) void toast.offsetWidth;
+    }
     toast.textContent = text;
     show(toast, true);
     requestAnimationFrame(() => toggle(toast, 'is-in', true));
@@ -1654,17 +1790,19 @@ export function createHud(root, { dispatch } = {}) {
   function destroy() {
     clearTimeout(toastTimer); clearTimeout(narrateTimer); clearTimeout(holdTimer);
     clearTimeout(annTimer); clearTimeout(annWriteTimer); clearTimeout(msAnnounceTimer); clearTimeout(ffEndTimer); clearTimeout(firstHintTimer);
+    clearTimeout(apartTimer); clearTimeout(beckonTimer);
     cancelAnimationFrame(fitRaf);
     for (const k of Object.keys(trailing)) clearTimeout(trailing[k]);
     for (const c of cleanups) c();
     if (dialog.open) dialog.close();
     hud.textContent = '';
-    hud.classList.remove('ee-hud', 'is-mobile', 'is-reduced', 'is-viewing', 'is-q-low', 'is-short', 'is-ff', 'is-guide-new');
+    hud.style.removeProperty('--tp-h');
+    hud.classList.remove('ee-hud', 'is-mobile', 'is-reduced', 'is-viewing', 'is-q-low', 'is-short', 'is-ff', 'is-guide-new', 'is-drawer', 'is-insp', 'is-framing', 'is-pop');
   }
 
   // The panels' rects from the last footprint() (main reads it at 5 Hz, in its read phase), so placing the inspector
   // while the camera moves forces no layout; measured afresh when there is none yet or it is stale.
-  const PANEL_EL = { left: () => leftCard, rail: () => rail, transport: () => transport };
+  const PANEL_EL = { left: () => leftCard, rail: () => rail, transport: () => transport, dock: () => dock, frame: () => dockFloat };
   function rectOf(k) {
     const r = panelRects && performance.now() - panelRects.at < 400 ? panelRects[k] : undefined;
     if (r) return r;
@@ -1675,6 +1813,7 @@ export function createHud(root, { dispatch } = {}) {
   // ═══ layout: the HUD's footprint, for the stage ═════════════════════════════════════════════════════
   // `rects`: every visible panel (scene notes keep clear of them). `insets`: the panels that frame the view on each
   // side; the stage centres the specimen in what they leave free. Viewport CSS px (the canvas fills the viewport).
+  let dockReserve = 66;          // the dock's height + gap above the transport, from the last time it was measured
   function footprint() {
     const vw = window.innerWidth, vh = window.innerHeight;
     const rects = [];
@@ -1686,12 +1825,20 @@ export function createHud(root, { dispatch } = {}) {
       return r;
     };
     const rTitle = add(title), rLeft = add(leftCard), rRail = add(rail), rTp = add(transport);
-    panelRects = { left: rLeft, rail: rRail, transport: rTp, at: performance.now() };
+    // the floating dock (in the phone-landscape sheet it is inside the transport's rect already), and Frame's plate
+    // while it shows: notes keep clear of it, but it is not an inset (the specimen would jump as it comes and goes)
+    const rDock = dockInSheet ? null : add(dock);
+    const rFrame = dockInSheet ? null : add(dockFloat);
+    panelRects = { left: rLeft, rail: rRail, transport: rTp, dock: rDock, frame: rFrame, at: performance.now() };
     const rBan = add(banner), rProg = add(progress);
     add(toast);
     if (!insp.hidden) add(inspPlate);
     if (!pop.hidden) add(pop);
-    const bottom = rTp ? Math.max(0, vh - rTp.top) : 0;
+    let bottom = rTp ? Math.max(0, vh - rTp.top) : 0;
+    // The specimen centres above the dock. On a phone its room stays reserved while the inspector plate takes its
+    // place (so pinning a cell never moves the specimen), and is given back while the drawer is expanded.
+    if (rDock) { dockReserve = Math.round(rTp ? rTp.top - rDock.top : rDock.height + 10); bottom = Math.max(bottom, vh - rDock.top); }
+    else if (mobile && !dockInSheet && !hud.classList.contains('is-drawer') && rTp) bottom += dockReserve;
     let insets;
     if (mobile) {
       const rLog = add(logSec);                       // on mobile the log line sits in the top block

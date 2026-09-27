@@ -120,7 +120,7 @@ In 3D, height encodes depth below the surface (a dome, with a small step at each
 - **Isolate:** in the Tissue stain, click a tissue in the composition legend to dim all the others; click it again, or press Esc, to show all.
 - **Timeline:** milestones and snapshots taken every 1,000 ticks, on a log-time axis. Milestones are always kept; the other snapshots are thinned to the latest eight and every 5,000th, then, oldest first, to fit a cap of 16 in all (6 on phones and other devices that start at Low quality). Click one to view that moment; *Back to live* returns, *Resume here* carries on from it (the same seed replays the same future).
 - **Share:** the link button copies `?seed=…&t=…`; the link fast-forwards to that tick and lands paused. A long jump shows the time left and a Stop button.
-- **Camera:** Specimen, Close and Map presets; drag to orbit, right-drag or two-finger drag to pan, scroll or pinch to zoom. While the run plays, the camera follows the growing embryo and turns slowly (O switches the turntable off) until you move it (F re-frames).
+- **Scene dock:** the bar floating over the view, just above the time bar (on phones, above the bottom sheet; in landscape, beside the stains) holds **Apart**, the **Specimen**, **Close** and **Map** camera presets, **Orbit** and, once you have moved the camera, **Frame**. Drag to turn the camera, right-drag or two-finger drag to pan, scroll or pinch to zoom. While the run plays, the camera follows the growing embryo and turns slowly (Orbit, or O, switches the turntable off) until you move it (Frame, or F, re-frames).
 - **Guide (?)** explains every colour and rule, with Quality (auto, high, medium, low) and Reduced motion settings.
 
 | Key | Action |
@@ -133,8 +133,8 @@ In 3D, height encodes depth below the surface (a dome, with a small step at each
 | X | Together ⇄ Apart |
 | [ / ] | Previous / next milestone |
 | L / Enter | Back to live / resume from the snapshot |
-| C / F / O | Camera preset / frame and follow / turntable |
-| Shift + arrows, PgUp / PgDn | Orbit, zoom |
+| C / F / O | Camera preset / frame and follow / orbit (the turntable) |
+| Shift + arrows, PgUp / PgDn | Turn the camera, zoom |
 | Q / M | Quality / reduced motion |
 | ? or H | Guide |
 | Esc | Close, unpin, back to live, stop a fast-forward, or show all tissues |

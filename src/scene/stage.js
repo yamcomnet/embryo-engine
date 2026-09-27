@@ -17,7 +17,24 @@ const DEG = Math.PI / 180;
 const EXPLODE_MAX = 1.49;              // stagger clock end: 1 + max delay (0.25 radius + 3 × 0.08 plate)
 const EXPLODE_RATE = 1 / 1.2;          // per second (each cell's own flight takes 1.2 s)
 const EMA_SETTLE_MS = 900;
+const MAX_DIST = 900, MAX_DIST_MAP = 1600;    // OrbitControls' zoom-out cap (the map preset: camera.js's own clamp)
 const FAMILY_TYPE = [TYPE.ECTO, TYPE.MESO, TYPE.ENDO, TYPE.STEM];
+// Narrow screens (phones) have no room beside the Apart stack for the full family names: the stack is framed to
+// leave a column for the callouts (applyHudRegion).
+const NARROW_PX = 760;
+const PLATE_KEYS = ['plate0', 'plate1', 'plate2', 'plate3'];
+// The plate callouts' shorter names, for the compact layouts labels.js falls back to when the full ones do not fit.
+const FAMILY_LABELS_SHORT = ['Ecto + Neural', 'Meso family', 'Endoderm', 'Stem'];
+// Width kept free to the right of the Apart stack on narrow screens for the plate callouts (CSS px): the column's
+// leader (labels.js, 28 px) plus the widest short callout ("Ecto + Neural 1,006", 153 px) and a margin.
+const NARROW_NOTE_COL = 188;
+// Display geometry spring (rad/s): the organism's centre, radius, dome height and the Apart plate gap follow the
+// ≤ 10 Hz stats through a critically damped spring, so plates, focus, framing and callouts glide instead of stepping.
+const GEO_OMEGA = 6;
+const GEO_N = 5;                       // channels: centre x, centre z, rMax, hMax, plate gap
+// How far the first cells of a flight have risen (the vertex shader's eeFly at the stagger clock, capped at 1): the
+// in-focus volume grows with the flight instead of jumping to the whole stack on its first and last frame.
+const flightReach = (s) => 1 - Math.pow(1 - MathUtils.clamp(s, 0, 1), 4.9);
 // Provisional field domains until setFieldInfo() (SPEC §4.5.2); channel order = morph RGBA.
 const DEFAULT_FIELDS = [
   { key: 'activator', channel: 0, domain: [0, 0.25], scale: 'sqrt', gates: [] },
@@ -85,17 +102,17 @@ export async function createStage(canvas, {
   const controls = new OrbitControls(camera, canvas);
   Object.assign(controls, {
     enableDamping: true, dampingFactor: 0.08, zoomToCursor: true, screenSpacePanning: true,
-    minDistance: 25, maxDistance: 900, minPolarAngle: 0.01, maxPolarAngle: 82 * DEG,
+    minDistance: 25, maxDistance: MAX_DIST, minPolarAngle: 0.01, maxPolarAngle: 82 * DEG,
   });
   const rig = createRig(camera, controls, { reducedMotion });
 
-  const labels = labelsRoot ? createLabels(labelsRoot, { max: tier.labels }) : null;
+  const labels = labelsRoot ? createLabels(labelsRoot, { max: tier.labels, onInvalidate: () => { st.dirty = true; } }) : null;
 
   // ── state ──
   const st = {
     viewIdx: 0, isolate: 0, exploded: false, explodeS: 0, flat: 0, hover: -1, pinned: -1,
     stats: null, fields: DEFAULT_FIELDS, params: null, reduced: !!reducedMotion,
-    cx: 100, cy: 100, rMax: 4, dmax: 1, hMax: hOf(1), plateGap: 6, plateR: 12,
+    cx: 100, cy: 100, rMax: 4, dmax: 1, hMax: hOf(1), plateR: 12,
     lastTick: -1, viewing: false, dirty: true, busyUntil: 0, animating: false, renders: 0, shadowDirty: true,
     focusDist: 0, cpuMs: 0, anchorAz: 1e9, lastRenderT: 0, width: 1, height: 1, domeD: 0, domeTarget: 1, turntable: false,
     clock: { visRel: 0, tauBirth: 1, tauDeath: 1, tauFate: 1 },
@@ -103,9 +120,36 @@ export async function createStage(canvas, {
   const times = new Float64Array(240);
   let tHead = 0, tCount = 0;
   const scratch = new Float64Array(240);
+  // Apart plate floors, from the eased plate gap (geo): the shader, picking, callouts and the DOF all read these.
   const plateY = [72, 54, 36, 18];
+  // eased display geometry: value, velocity and target per channel (see GEO_OMEGA)
+  const geo = { x: new Float64Array(GEO_N), v: new Float64Array(GEO_N), t: new Float64Array(GEO_N), init: false, snap: false };
   const v3 = new Vector3(), v3b = new Vector3(), v3c = new Vector3(), bufSize = new Vector2(), ray = new Ray();
   const avoidBox = { x: 0, y: 0, rx: 0, ry: 0 };
+  // Apart: each plate's screen ellipse [cx, cy, rx, ry] (disc, lit edge and glow), which callout text keeps off
+  const plateEll = new Float64Array(16);
+  const ellBox = new Float64Array(4);
+  /** The plates' outlines into plateEll (eight points round each edge ring, and the ellipse through their bounding
+   *  box, padded for the glow); returns the count. A small function of its own, so its arithmetic stays unboxed. */
+  function platesOnScreen() {
+    const r = st.plateR + 0.4, cx = geo.x[0], cz = geo.x[1], w = st.width, h = st.height;
+    for (let k = 0; k < 4; k++) {
+      ellBox[0] = Infinity; ellBox[1] = Infinity; ellBox[2] = -Infinity; ellBox[3] = -Infinity;
+      for (let j = 0; j < 8; j++) {
+        const a = (j * Math.PI) / 4;
+        v3b.set(cx + r * Math.cos(a), plateY[k] - 0.18, cz + r * Math.sin(a)).project(camera);
+        const px = (v3b.x * 0.5 + 0.5) * w, py = (0.5 - v3b.y * 0.5) * h;
+        if (px < ellBox[0]) ellBox[0] = px;
+        if (px > ellBox[2]) ellBox[2] = px;
+        if (py < ellBox[1]) ellBox[1] = py;
+        if (py > ellBox[3]) ellBox[3] = py;
+      }
+      const o = 4 * k;
+      plateEll[o] = 0.5 * (ellBox[0] + ellBox[2]); plateEll[o + 1] = 0.5 * (ellBox[1] + ellBox[3]);
+      plateEll[o + 2] = 0.5 * (ellBox[2] - ellBox[0]) + 3; plateEll[o + 3] = 0.5 * (ellBox[3] - ellBox[1]) + 3;
+    }
+    return 4;
+  }
   // The HUD covers parts of the canvas: the view is shifted (camera view offset) so the specimen centres in the
   // free region, and auto-framing fits the organism to that region. Offsets in CSS px, eased toward the target.
   const hud = { l: 0, r: 0, t: 0, b: 0 };
@@ -209,6 +253,30 @@ export async function createStage(canvas, {
     const ng = st.stats?.geom?.neural;
     anchor.neural = ng && ng.count > 0 ? spiralFind(ng.cx, ng.cy, TYPE.NEURAL, 10) : -1;
   }
+  // Apart callouts on the plates' camera-right rims, from the eased geometry. `full` (stats, stain, width) declares
+  // them; otherwise only their anchors move, every render while the plates ease or the camera turns (no allocation).
+  // They stay on the right of the stack: flipped to the left they would sit on the plates. They are one label group:
+  // labels.js shows all four, stepping from full names to short names to a column (packed into a free band on a short
+  // screen) as room runs out, and keeps their text off the plates (plateEll) but as a last resort. Phones also get a
+  // stack framed to leave them a column (applyHudRegion).
+  const plateAnchor = [null, null, null, null];     // the plate callouts' world anchors, moved in place
+  function placePlateNotes(full = true) {
+    const s = st.stats;
+    if (!labels || !s) return;
+    const az = rig.azimuth(), rx = Math.cos(az), rz = -Math.sin(az), fx = Math.sin(az), fz = Math.cos(az);
+    const r = st.plateR, ox = geo.x[0], oz = geo.x[1];
+    const ax = r * (0.92 * rx + 0.38 * fx), az2 = r * (0.92 * rz + 0.38 * fz);
+    for (let k = 0; k < 4; k++) {
+      if (!full) { plateAnchor[k]?.set(ox + ax, plateY[k] + 0.6, oz + az2); continue; }
+      const n = s.plates?.fate?.[k] ?? 0;
+      labels.set(PLATE_KEYS[k], {
+        priority: 1 + k, text: FAMILY_LABELS[k], short: FAMILY_LABELS_SHORT[k], group: 'plates', value: fmt(n),
+        swatch: palette[FAMILY_TYPE[k]], side: 1,
+        x: ox + ax, y: plateY[k] + 0.6, z: oz + az2,
+      });
+      plateAnchor[k] = labels.anchor(PLATE_KEYS[k]);
+    }
+  }
   function cellTopWorld(i, out) {
     const x = i % GRID, y = (i / GRID) | 0;
     const h = st.flat > 0.5 ? 0.6 : hOf(cells.cell[4 * i + 2]);
@@ -224,19 +292,10 @@ export async function createStage(canvas, {
     if (st.explodeS > 0.02 && st.explodeS < 0.9 * EXPLODE_MAX) { labels.hideAll(); return; }   // mid-flight
     if (apart) {
       for (const k of ['anterior', 'neural', 'ecto', 'stem', 'muscle']) labels.hide(k);
-      const az = rig.azimuth(), rx = Math.cos(az), rz = -Math.sin(az), fx = Math.sin(az), fz = Math.cos(az);
-      for (let k = 0; k < 4; k++) {
-        const n = s.plates?.fate?.[k] ?? 0;
-        const r = st.plateR;
-        labels.set('plate' + k, {
-          priority: 1 + k, text: FAMILY_LABELS[k], value: fmt(n),
-          swatch: palette[FAMILY_TYPE[k]],
-          x: st.cx - 99.5 + r * (0.92 * rx + 0.38 * fx), y: plateY[k] + 0.6, z: st.cy - 99.5 + r * (0.92 * rz + 0.38 * fz),
-        });
-      }
+      placePlateNotes();
       return;
     }
-    for (let k = 0; k < 4; k++) labels.hide('plate' + k);
+    for (let k = 0; k < 4; k++) labels.hide(PLATE_KEYS[k]);
     labels.set('anterior', { priority: 1, text: 'Anterior', value: '↑', x: st.cx - 99.5, y: 0.8, z: st.cy - st.rMax - 6 - 99.5 });
     // Anatomical landmarks (ADDENDUM §C) in every stain; only the Tissue stain colours by type, so only there do they
     // carry the tissue's swatch and count. Elsewhere they are bare, dimmed landmarks, never read as a colour key.
@@ -348,18 +407,26 @@ export async function createStage(canvas, {
     rig.setAspect(w / h);
     applyHudRegion();
     applyViewOffset();
-    labels?.setMax(w < 760 ? 3 : tier.labels);
+    applyNoteMax();
     st.dirty = true;
+  }
+  // Narrow screens show three landmarks; Apart always shows all four plates (the stem plate's callout is the fourth).
+  function applyNoteMax() {
+    const cap = st.width < NARROW_PX ? 3 : tier.labels;
+    labels?.setMax(st.exploded ? Math.max(4, cap) : cap);
   }
 
   function applyHudRegion() {
     const w = Math.max(1, st.width), h = Math.max(1, st.height);
     const l = MathUtils.clamp(hud.l, 0, 0.45 * w), r = MathUtils.clamp(hud.r, 0, 0.45 * w);
     const t = MathUtils.clamp(hud.t, 0, 0.45 * h), b = MathUtils.clamp(hud.b, 0, 0.45 * h);
-    // Apart: the plate callouts run to the right of the stack, so on wide screens the stack moves left to make room
-    const apartShift = st.exploded && w >= 760 ? -Math.min(130, 0.09 * w) : 0;
-    viewOff.tx = (l - r) / 2 + apartShift; viewOff.ty = (t - b) / 2;
-    rig.setRegion((w - l - r) / w, (h - t - b) / h);
+    // Apart: the plate callouts run to the right of the stack, so on wide screens the stack moves left to make room.
+    // A phone has no room beside a full-width stack: a column is kept free on the right for the callouts and the
+    // stack is fitted, by its plates' width, into what is left.
+    const apartShift = st.exploded && w >= NARROW_PX ? -Math.min(130, 0.09 * w) : 0;
+    const col = st.exploded && w < NARROW_PX ? Math.min(NARROW_NOTE_COL, 0.6 * (w - l - r)) : 0;
+    viewOff.tx = (l - r - col) / 2 + apartShift; viewOff.ty = (t - b) / 2;
+    rig.setRegion((w - l - r - col) / w, (h - t - b) / h, col > 0);
     if (st.reduced || st.renders === 0) { viewOff.x = viewOff.tx; viewOff.y = viewOff.ty; }
   }
   function applyViewOffset() {
@@ -384,6 +451,40 @@ export async function createStage(canvas, {
     st.hMax = hOf(st.dmax);
   }
 
+  // ── display geometry (see GEO_OMEGA) ──
+  function geoTargets() {
+    const t = geo.t;
+    t[0] = st.cx - 99.5; t[1] = st.cy - 99.5; t[2] = st.rMax; t[3] = st.hMax; t[4] = MathUtils.clamp(0.35 * st.rMax, 6, 18);
+  }
+  function geoApply() {
+    for (let k = 0; k < 4; k++) plateY[k] = 18 + (3 - k) * geo.x[4];
+    st.plateR = geo.x[2] + 8;
+    rig.setOrganism(geo.x[0], geo.x[1], geo.x[2], geo.x[3], plateY[3], plateY[0] + 3);
+  }
+  function geoSnap() {
+    geoTargets();
+    for (let k = 0; k < GEO_N; k++) { geo.x[k] = geo.t[k]; geo.v[k] = 0; }
+    geo.init = true; geo.snap = false;
+    geoApply();
+  }
+  /** Advance the geometry spring (exact critically damped step: frame-rate independent). True while it moves. */
+  function geoStep(dt) {
+    geoTargets();
+    if (!geo.init || st.reduced) { geoSnap(); return false; }
+    const x = geo.x, v = geo.v, t = geo.t, e = Math.exp(-GEO_OMEGA * dt);
+    let moving = false;
+    for (let k = 0; k < GEO_N; k++) {
+      const x0 = x[k] - t[k];
+      if (x0 === 0 && v[k] === 0) continue;
+      const tmp = (v[k] + GEO_OMEGA * x0) * dt;
+      v[k] = (v[k] - GEO_OMEGA * tmp) * e;
+      x[k] = t[k] + (x0 + tmp) * e;
+      if (Math.abs(x[k] - t[k]) < 1e-3 && Math.abs(v[k]) < 1e-3) { x[k] = t[k]; v[k] = 0; } else moving = true;
+    }
+    geoApply();
+    return moving;
+  }
+
   function applyTier(t) {
     tier = t;
     cells.setLod(t.lod);
@@ -406,6 +507,7 @@ export async function createStage(canvas, {
         cells.snap();
         const g = frame.stats?.geom;                 // a jump (fast-forward, reset, snapshot): the relief snaps too
         if (g && g.dmax > 0) { st.dmax = Math.max(1, g.dmax); setDomeTarget(st.dmax, true); }
+        geo.snap = true;                             // and so does the display geometry, with the next stats
       }
       // energy motes: not under reduced motion, above 240 t/s, or for snapshot frames
       const tps = st.stats?.tps?.actual ?? 0;
@@ -429,9 +531,8 @@ export async function createStage(canvas, {
       }
       const e = stats.energy;
       if (e && e.thrStem) DU.uThr.value.set(e.thrStem, e.thrDiff);
-      st.plateGap = MathUtils.clamp(0.35 * st.rMax, 6, 18);
-      for (let k = 0; k < 4; k++) plateY[k] = 18 + (3 - k) * st.plateGap;
-      rig.setOrganism(st.cx - 99.5, st.cy - 99.5, st.rMax, st.hMax, plateY[3], plateY[0] + 3);
+      // new targets for the display geometry; render() eases toward them (a jump, or reduced motion, snaps)
+      if (first || st.reduced || st.viewing || geo.snap) geoSnap(); else geoTargets();
       computeAnchors();
       updateNotes();
       st.dirty = true;
@@ -471,6 +572,7 @@ export async function createStage(canvas, {
       st.exploded = !!on;
       rig.setExploded(st.exploded);
       applyHudRegion();
+      applyNoteMax();
       if (st.reduced) st.explodeS = st.exploded ? EXPLODE_MAX : 0;
       touch(200);
     },
@@ -594,7 +696,13 @@ export async function createStage(canvas, {
     },
     resetFrameStats() { tCount = 0; tHead = 0; st.lastRenderT = 0; },
 
-    needsRender() { return st.dirty || st.animating || performance.now() < st.busyUntil; },
+    needsRender() {
+      if (st.dirty || st.animating) return true;
+      const now = performance.now();
+      // the callouts may ask for one more update with nothing else moving (a layout chosen afresh once the view
+      // has settled, or an upgrade that has waited its time): labels.js says when
+      return now < st.busyUntil || (labels !== null && now >= labels.wake[0]);
+    },
 
     render(dtSec = 1 / 60, nowMs = performance.now()) {
       const t0 = performance.now();
@@ -616,8 +724,19 @@ export async function createStage(canvas, {
         applyViewOffset();
       }
 
+      // display geometry toward the latest stats (before the camera: the rig frames the eased organism)
+      const geoMoving = geoStep(dt);
+      const gx = geo.x[0], gz = geo.x[1], gr = geo.x[2], gh = geo.x[3];
+
       // camera
       const rigMoving = rig.update(dt);
+      // Zoom-out cap: the map's narrow lens needs more distance (Apart from above on a phone, up to the rig's 1600).
+      // It drops back only as the camera comes in, so leaving the map is never clamped in one jump.
+      const capWant = rig.preset === 'map' ? MAX_DIST_MAP : MAX_DIST;
+      if (controls.maxDistance !== capWant) {
+        controls.maxDistance = capWant > controls.maxDistance ? capWant
+          : Math.max(capWant, Math.min(controls.maxDistance, camera.position.distanceTo(controls.target) + 1));
+      }
       const ctrlMoving = rig.userControlled ? controls.update(dt) : (controls.update(dt), false);
       const t = controls.target;
       const tx = MathUtils.clamp(t.x, -110, 110), ty = MathUtils.clamp(t.y, -5, 60), tz = MathUtils.clamp(t.z, -110, 110);
@@ -630,19 +749,16 @@ export async function createStage(canvas, {
         const step = st.reduced ? EXPLODE_MAX : EXPLODE_RATE * dt;
         st.explodeS = st.explodeS < exTarget ? Math.min(exTarget, st.explodeS + step) : Math.max(exTarget, st.explodeS - step);
       }
-      const rP = st.rMax + 8;
-      const plateMoving = Math.abs(st.plateR - rP) > 0.05;
-      st.plateR += (rP - st.plateR) * (st.reduced ? 1 : 1 - Math.exp(-dt / 0.3));
       U.uExplodeS.value = st.explodeS;
       U.uPlateY.value.set(plateY[0], plateY[1], plateY[2], plateY[3]);
-      U.uOrg.value.set(st.cx - 99.5, st.cy - 99.5, st.rMax);
+      U.uOrg.value.set(gx, gz, gr);
       const plateA = MathUtils.clamp(st.explodeS / 0.5, 0, 1);
-      spec.setPlates(plateY, st.plateR, plateA, st.cx - 99.5, st.cy - 99.5);
+      spec.setPlates(plateY, st.plateR, plateA, gx, gz);
       AU.uApart.value = plateA;
       // scale grid: the map and depth views show it across the dish; elsewhere only a faint reticle near the organism
       const gridAll = Math.max(st.flat, st.viewIdx === 1 ? 1 : 0);
       AU.uGrid.value = MathUtils.lerp(0.013, 0.03, st.flat);
-      AU.uGridFade.value.set(st.cx - 99.5, st.cy - 99.5, gridAll > 0.5 ? 1e4 : st.rMax + 3, 0.9 * st.rMax + 12);
+      AU.uGridFade.value.set(gx, gz, gridAll > 0.5 ? 1e4 : gr + 3, 0.9 * gr + 12);
       AU.uEdgeLine.value = 0.05 * gridAll;
       AU.uHaloAmt.value = 0.17 * (1 - st.flat) * (st.viewIdx === 0 ? 1 : 0.5) * (1 - 0.7 * plateA);
       AU.uBaseTint.value = 0.06 * (1 - 0.85 * plateA);
@@ -671,8 +787,8 @@ export async function createStage(canvas, {
       // the organism, or the whole Apart stack
       const az = rig.azimuth();
       const apartR = st.explodeS > 0.02 ? st.plateR + 4 : 0;
-      const shR = Math.max(st.rMax + 8, apartR);
-      if (spec.aimLights(az, st.cx - 99.5, st.cy - 99.5, shR, st.explodeS > 0.02 ? plateY[0] + 8 : st.hMax + 4)) st.shadowDirty = true;
+      const shR = Math.max(gr + 8, apartR);
+      if (spec.aimLights(az, gx, gz, shR, st.explodeS > 0.02 ? plateY[0] + 8 : gh + 4)) st.shadowDirty = true;
       camera.updateMatrixWorld();
       U.uKeyDirV.value.copy(spec.keyDir).transformDirection(camera.matrixWorldInverse);
       U.uBackDirV.value.copy(spec.backDir).transformDirection(camera.matrixWorldInverse);
@@ -680,14 +796,15 @@ export async function createStage(canvas, {
 
       if (Math.abs(MathUtils.euclideanModulo(rig.azimuth() - st.anchorAz + Math.PI, 2 * Math.PI) - Math.PI) > 15 * DEG) { computeAnchors(); updateNotes(); }
       if (exMoving) updateNotes();
+      else if (st.explodeS >= EXPLODE_MAX && (geoMoving || rigMoving || ctrlMoving)) placePlateNotes(false);   // callouts ride the plates
 
       // display pass, motes, set, shadows, post
       cells.updateDisplay(renderer, dt);
       motes.update(st.lastTick, st.clock.visRel, st.flat, st.explodeS > 0.02);
       renderer.getDrawingBufferSize(bufSize);
       // haze: just above the dish's far rim, behind the organism
-      v3c.set(camera.position.x - (st.cx - 99.5), 0, camera.position.z - (st.cy - 99.5)).normalize();
-      v3.set(st.cx - 99.5 - v3c.x * 100, 10, st.cy - 99.5 - v3c.z * 100).project(camera);
+      v3c.set(camera.position.x - gx, 0, camera.position.z - gz).normalize();
+      v3.set(gx - v3c.x * 100, 10, gz - v3c.z * 100).project(camera);
       spec.update(camera, bufSize.y, v3.x * 0.5 + 0.5, MathUtils.clamp(v3.y * 0.5 + 0.5, -0.5, 1.5));
       const el = rig.elevation();
       // the objective is only ever seen melted by the depth of field: without DOF (Low) it stays out of the picture
@@ -706,15 +823,18 @@ export async function createStage(canvas, {
       // depth of field focus: the pinned cell, else the organism (or the middle of the Apart stack)
       const apartF = st.explodeS / EXPLODE_MAX;
       if (st.pinned >= 0 && cells.cell[4 * st.pinned]) cellTopWorld(st.pinned, v3);
-      else v3.set(st.cx - 99.5, MathUtils.lerp(0.4 * st.hMax, 0.5 * (plateY[0] + plateY[3]), apartF), st.cy - 99.5);
+      else v3.set(gx, MathUtils.lerp(0.4 * gh, 0.5 * (plateY[0] + plateY[3]), apartF), gz);
       v3.applyMatrix4(camera.matrixWorldInverse);
       const fd = -v3.z;
       const focusMoving = Math.abs(st.focusDist - fd) > 0.05 * Math.max(1, fd * 0.01);
       st.focusDist = st.focusDist === 0 ? fd : st.focusDist + (fd - st.focusDist) * (1 - Math.exp(-dt / 0.15));
-      // the in-focus volume always contains every cell: during a flight it already spans the whole stack
-      const flying = st.explodeS > 0 ? 1 : 0;
-      const range = 1.02 * st.rMax + 3 + flying * (plateY[0] - plateY[3]) * 0.6;
-      const topY = flying ? plateY[0] + 6 : st.hMax + 4;
+      // The in-focus volume always contains every cell: it widens and rises with the flight, as far as the first
+      // cells have flown (no cell is higher than eeFly(stagger clock) of the way to its plate). A switch at
+      // explodeS > 0 would jump on a flight's first and last frame: on the last, the objective has faded back in
+      // (opaque, in the depth buffer) while the volume still reached the top plate, so it rendered sharp for a frame.
+      const reach = flightReach(st.explodeS);
+      const range = 1.02 * gr + 3 + reach * (plateY[0] - plateY[3]) * 0.6;
+      const topY = MathUtils.lerp(gh + 4, plateY[0] + 6, reach);
       post.setFocus(camera, st.focusDist, range, topY, st.flat > 0.5);
       post.render(dt);
 
@@ -722,12 +842,12 @@ export async function createStage(canvas, {
         // the organism's screen ellipse: labels keep off it (not in Apart, where plates carry the labels)
         let avoid = null;
         if (st.explodeS < 0.02) {
-          v3.set(st.cx - 99.5, 0.5 * st.hMax, st.cy - 99.5).project(camera);
+          v3.set(gx, 0.5 * gh, gz).project(camera);
           const ax = (v3.x * 0.5 + 0.5) * st.width, ay = (0.5 - v3.y * 0.5) * st.height;
           let rx = 0, ry = 0;
           for (let k = 0; k < 5; k++) {                // four rim points and the dome's top
-            const a = (k * Math.PI) / 2, r = k < 4 ? st.rMax : 0;
-            v3.set(st.cx - 99.5 + Math.cos(a) * r, k === 4 ? st.hMax + 0.5 : k % 2 ? 0 : 0.5 * st.hMax, st.cy - 99.5 + Math.sin(a) * r).project(camera);
+            const a = (k * Math.PI) / 2, r = k < 4 ? gr : 0;
+            v3.set(gx + Math.cos(a) * r, k === 4 ? gh + 0.5 : k % 2 ? 0 : 0.5 * gh, gz + Math.sin(a) * r).project(camera);
             rx = Math.max(rx, Math.abs((v3.x * 0.5 + 0.5) * st.width - ax));
             ry = Math.max(ry, Math.abs((0.5 - v3.y * 0.5) * st.height - ay));
           }
@@ -735,12 +855,13 @@ export async function createStage(canvas, {
           avoidBox.x = ax; avoidBox.y = ay; avoidBox.rx = 1.05 * rx + 6; avoidBox.ry = 1.05 * Math.max(ry, 0.35 * rx) + 6;
           avoid = avoidBox;
         }
-        labels.update(camera, st.width, st.height, avoid);
+        const nEll = st.explodeS >= 0.9 * EXPLODE_MAX ? platesOnScreen() : 0;
+        labels.update(camera, st.width, st.height, avoid, plateEll, nEll);
       }
 
       st.renders++;
       st.dirty = false;
-      st.animating = rigMoving || ctrlMoving || exMoving || plateMoving || flatMoving || focusMoving || offMoving || domeMoving;
+      st.animating = rigMoving || ctrlMoving || exMoving || geoMoving || flatMoving || focusMoving || offMoving || domeMoving;
       st.cpuMs += (performance.now() - t0 - st.cpuMs) * 0.1;          // running average of JS time per render
     },
 

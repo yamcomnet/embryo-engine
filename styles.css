@@ -220,7 +220,7 @@ button.ee-row:hover { background: #ECE7DC0D; }
 /* the Energy stain's gold marks the cells that can divide now (above threshold, with an empty neighbour) */
 .ee-fact--gold dt::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; vertical-align: 1px; background: #FFC15A; box-shadow: 0 0 6px #FFC15A88; }
 
-/* ─── right rail: stains, layers, camera ───────────────────────────────────────────────────────────── */
+/* ─── right rail: stains ───────────────────────────────────────────────────────────────────────────── */
 .ee-rail {
   position: absolute; right: var(--g); top: calc(var(--g) - 4px); width: var(--rail); padding: 14px 14px 14px;
   display: flex; flex-direction: column; gap: 18px; box-shadow: var(--shadow);
@@ -253,7 +253,6 @@ button.ee-row:hover { background: #ECE7DC0D; }
 [aria-checked="true"] > .ee-radio::after { transform: scale(1); }
 
 .ee-seg { display: grid; grid-template-columns: repeat(2, 1fr); border: 1px solid var(--hair); border-radius: 5px; overflow: hidden; }
-.ee-seg--3 { grid-template-columns: repeat(3, 1fr); }
 .ee-seg--4 { grid-template-columns: repeat(4, 1fr); }
 .ee-seg__b {
   display: flex; align-items: center; justify-content: center; gap: 7px; height: 30px; padding: 0 8px; border: 0; background: transparent;
@@ -266,11 +265,63 @@ button.ee-row:hover { background: #ECE7DC0D; }
 .ee-seg__b:focus-visible { outline-offset: -2px; border-radius: 4px; }
 .ee-seg__b[aria-checked="true"] { box-shadow: inset 0 -2px 0 var(--light); }
 .ee-seg__b + .ee-seg__b[aria-checked="true"] { box-shadow: inset 1px 0 0 var(--hair), inset 0 -2px 0 var(--light); }
-.ee-link {
-  align-self: flex-start; margin: 8px 0 0; padding: 2px 0; border: 0; background: transparent; font: 500 12px/1.2 var(--font-ui); color: var(--ink-2);
-  display: inline-flex; align-items: center; gap: 6px; text-decoration: underline; text-decoration-color: var(--hair-3); text-underline-offset: 3px;
+
+/* ─── scene dock: layers, camera, orbit, frame (src/ui/hud.js) ────────────────────────────────────────
+   One hairline plate floating over the view, just above the transport (--tp-h is the transport's height, kept by
+   the HUD), centred on the space the left column and the rail leave free (= under the specimen). Auto margins in a
+   left/right box centre it while it fits and otherwise start it at the column's edge, so a wide dock on a narrow
+   desktop runs on under the (short) rail instead of over the log. Its active marker is the segmented controls'
+   --light underline; the icon takes the light too. */
+.ee-hud { --dock-bh: 32px; }                /* the dock buttons' height (44 px on a touch screen) */
+.ee-dock {
+  position: absolute; z-index: 1; bottom: calc(var(--g) - 4px + var(--tp-h, 74px) + 10px);
+  left: calc(var(--g) + var(--col) + 12px); right: calc(var(--g) + var(--rail) + 12px); width: fit-content; margin: 0 auto;
+  padding: 4px; white-space: nowrap; background: var(--plate-text); box-shadow: var(--shadow);
+  transition: opacity .12s var(--ease);
 }
-.ee-link:hover { color: var(--ink); }
+.ee-dock__bar { position: relative; display: flex; align-items: center; gap: 2px; }
+/* Frame's own plate, out of the row's flow so that showing it never moves the other buttons: beside the dock, the
+   same height, 8 px apart (the bar sits 5 px inside the dock's edge: 4 padding + 1 hairline) */
+.ee-dock__float {
+  position: absolute; left: calc(100% + 13px); top: -5px; display: flex; padding: 4px;
+  background: var(--plate-deep); border: 1px solid var(--hair); border-radius: var(--r); box-shadow: var(--shadow);
+  animation: ee-float-in .2s var(--ease); transition: opacity .12s var(--ease);
+}
+@keyframes ee-float-in { from { opacity: 0; transform: translateY(3px); } }
+/* a timeline popover opens over the dock: the dock fades out underneath (it keeps its rect) and takes no taps */
+.ee-hud.is-pop :is(.ee-dock:not(.is-inline), .ee-dock__float) { opacity: 0; pointer-events: none; }
+.ee-dock__cams { display: flex; align-items: center; gap: 2px; }
+.ee-dock__sep { flex: none; width: 1px; height: 20px; margin: 0 5px; background: var(--hair); }
+.ee-dock__b {
+  position: relative; flex: none; display: inline-flex; align-items: center; gap: 7px; height: var(--dock-bh); padding: 0 11px 0 9px;
+  border: 0; border-radius: 4px; background: transparent; color: var(--ink-2); font: 500 12.5px/1 var(--font-ui);
+  transition: background .15s, color .15s;
+}
+.ee-dock__b:hover { background: #ECE7DC0D; color: var(--ink); }
+.ee-dock__b:active { background: #ECE7DC14; }
+.ee-dock__b:focus-visible { outline-offset: -2px; }
+.ee-dock__i { display: grid; place-items: center; flex: none; color: var(--mute); transition: color .15s; }
+.ee-dock__i svg { display: block; width: 16px; height: 16px; }
+.ee-dock__b:hover .ee-dock__i { color: var(--ink-2); }
+.ee-dock__b::before {                        /* the active marker */
+  content: ''; position: absolute; left: 9px; right: 9px; bottom: 0; height: 2px; border-radius: 1px 1px 0 0;
+  background: var(--light); box-shadow: 0 0 6px var(--light-soft); opacity: 0; transform: scaleX(.3); transition: opacity .2s, transform .25s var(--ease);
+}
+/* chosen: a lit tile, clearly brighter than a hover (#ECE7DC0D), plus the underline and the lit icon */
+.ee-dock__b:is([aria-pressed="true"], [aria-checked="true"]) { color: var(--ink); background: #ECE7DC1C; }
+.ee-dock__b:is([aria-pressed="true"], [aria-checked="true"]) .ee-dock__i { color: var(--light); }
+.ee-dock__b:is([aria-pressed="true"], [aria-checked="true"])::before { opacity: 1; transform: none; }
+/* Orbit is on but not turning now (paused, a snapshot, the camera taken, Map, reduced motion): a quieter mark */
+.ee-dock__b.is-idle::before { opacity: .4; box-shadow: none; }
+.ee-dock__b.is-idle .ee-dock__i { color: #CFE0FFB3; }
+/* the one-time nudge toward Apart: a soft light ring breathes three times (opacity only; none under reduced motion) */
+.ee-dock__b::after {
+  content: ''; position: absolute; inset: -1px; border-radius: 5px; pointer-events: none; opacity: 0;
+  box-shadow: 0 0 0 1px var(--light), 0 0 18px 2px var(--light-soft);
+}
+.ee-dock__b.is-beckon::after { animation: ee-glow 1.8s ease-in-out 3; }
+.ee-dock__b.is-beckon .ee-dock__i { color: var(--light); }
+@keyframes ee-glow { 50% { opacity: 1; } }
 
 /* ─── transport ────────────────────────────────────────────────────────────────────────────────────── */
 .ee-transport {
@@ -419,6 +470,14 @@ button.ee-row:hover { background: #ECE7DC0D; }
 .ee-hud:not(.is-mobile).is-viewing .ee-progress { top: calc(var(--g) + 48px); }
 .ee-hud:not(.is-mobile).is-ff .ee-toast { top: calc(var(--g) + 92px); }
 .ee-hud:not(.is-mobile).is-ff.is-viewing .ee-toast { top: calc(var(--g) + 138px); }
+/* a hint about the scene dock (the one-time "Try Apart") sits just above it, not at the top: in the dock's own
+   left/right box, so it is centred on the dock exactly as the dock is (and starts where it starts when it overflows) */
+.ee-hud:not(.is-mobile) .ee-toast.is-dock {
+  top: auto; bottom: calc(var(--g) - 4px + var(--tp-h, 74px) + 10px + var(--dock-bh) + 10px + 10px);
+  left: calc(var(--g) + var(--col) + 12px); right: calc(var(--g) + var(--rail) + 12px); width: fit-content; margin: 0 auto;
+  transform: translateY(-6px);
+}
+.ee-hud:not(.is-mobile) .ee-toast.is-dock.is-in { transform: none; }
 
 /* ─── inspector callout ────────────────────────────────────────────────────────────────────────────── */
 .ee-insp { position: fixed; inset: 0; pointer-events: none; z-index: 3; }
@@ -586,6 +645,35 @@ button.ee-row:hover { background: #ECE7DC0D; }
   .ee-sub { font-size: 13.5px; }
   .ee-stat--rates { display: none; }
 }
+/* narrow desktops: the camera presets that are not chosen show their icon only (below 880 px), and so does Frame
+   (below 920 px, where its labelled plate would pass the gutter); the tooltip and the accessible name keep the word */
+@media (max-width: 879px) {
+  .ee-hud:not(.is-mobile) .ee-dock__b--cam[aria-checked="false"] { padding: 0; width: 34px; justify-content: center; }
+  .ee-hud:not(.is-mobile) .ee-dock__b--cam[aria-checked="false"] .ee-dock__l {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+  }
+  .ee-hud:not(.is-mobile) .ee-dock__b--cam[aria-checked="false"]::before { left: 8px; right: 8px; }
+}
+@media (max-width: 919px) {
+  .ee-hud:not(.is-mobile) .ee-dock__b--frame { padding: 0; width: 34px; justify-content: center; }
+  .ee-hud:not(.is-mobile) .ee-dock__b--frame .ee-dock__l {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+  }
+  .ee-hud:not(.is-mobile) .ee-dock__b--frame::before { left: 8px; right: 8px; }
+}
+/* below 820 px the dock already runs on under the rail: no room beside it, so Frame's plate sits above its right end
+   (as on a phone), and the dock's hint pill above both */
+@media (max-width: 819px) {
+  .ee-hud:not(.is-mobile) .ee-dock__float { left: auto; right: -5px; top: auto; bottom: calc(100% + 13px); }
+  .ee-hud:not(.is-mobile).is-framing .ee-toast.is-dock {
+    bottom: calc(var(--g) - 4px + var(--tp-h, 74px) + 10px + 2 * (var(--dock-bh) + 10px) + 8px + 10px);
+  }
+}
+/* a touch screen wide enough for the desktop layout (a tablet): the dock's targets grow to 44 px */
+@media (pointer: coarse) {
+  .ee-hud:not(.is-mobile) { --dock-bh: 44px; }
+  .ee-hud:not(.is-mobile) .ee-dock__b { min-width: 44px; }
+}
 @media (max-height: 820px) and (min-width: 760px) {
   .ee-col { gap: 12px; }
   .ee-sub { margin-top: 8px; }
@@ -684,14 +772,31 @@ button.ee-row:hover { background: #ECE7DC0D; }
 }
 .ee-hud.is-mobile .ee-banner__acts { margin-left: auto; }
 .ee-hud.is-mobile .ee-action { height: 44px; padding: 0 14px; border-radius: 22px; }
-.ee-hud.is-mobile .ee-toast { top: auto; bottom: 200px; }
+/* the scene dock: above the collapsed sheet, centred, tab-bar style (icon over a short label) on ≥ 48 × 48 targets;
+   it steps aside while the drawer is expanded or the inspector plate takes its place */
+.ee-hud.is-mobile .ee-dock { left: 12px; right: 12px; bottom: calc(var(--tp-h, 196px) + 10px); padding: 3px; }
+.ee-hud.is-mobile:not(.is-short):is(.is-drawer, .is-insp) .ee-dock { display: none; }
+.ee-hud.is-mobile :is(.ee-dock__bar, .ee-dock__cams) { gap: 0; }
+.ee-hud.is-mobile .ee-dock__sep { height: 28px; margin: 0 3px; }
+.ee-hud.is-mobile .ee-dock__b {
+  flex-direction: column; justify-content: center; gap: 5px; min-width: 48px; height: 48px; padding: 1px 6px 0; border-radius: 5px;
+  font-size: 10.5px; letter-spacing: .01em;
+}
+.ee-hud.is-mobile .ee-dock__i svg { width: 18px; height: 18px; }
+.ee-hud.is-mobile .ee-dock__b::before { left: 16px; right: 16px; }
+/* Frame's plate: above the dock's right end (over Orbit), edges aligned, 8 px apart (the bar is 4 px inside the dock) */
+.ee-hud.is-mobile .ee-dock__float { left: auto; right: -4px; top: auto; bottom: calc(100% + 12px); padding: 3px; }
+.ee-hud.is-mobile .ee-toast {
+  top: auto; bottom: calc(var(--tp-h, 196px) + 78px); width: max-content; max-width: calc(100vw - 24px); white-space: normal; text-align: center;
+}
+.ee-hud.is-mobile.is-framing:not(.is-short, .is-drawer, .is-insp) .ee-toast { bottom: calc(var(--tp-h, 196px) + 142px); }
 .ee-hud.is-mobile .ee-progress { position: static; transform: none; width: auto; }
 .ee-hud.is-mobile .ee-insp__plate { left: 12px; right: 12px; width: auto; top: auto; }
 .ee-hud.is-mobile.is-short .ee-insp__plate {
   left: auto; right: max(12px, env(safe-area-inset-right)); width: min(300px, 40vw); overflow-y: auto; overscroll-behavior: contain;
 }
 .ee-hud.is-mobile .ee-insp .ee-btn--x { width: 44px; height: 44px; }
-.ee-hud.is-mobile .ee-pop { max-width: calc(100vw - 16px); }
+.ee-hud.is-mobile .ee-pop { max-width: calc(100vw - 16px); pointer-events: auto; }
 .ee-hud.is-mobile .ee-help__rules > div, .ee-hud.is-mobile .ee-help__read, .ee-hud.is-mobile .ee-help__keys { grid-template-columns: 1fr; }
 .ee-hud.is-mobile .ee-help__rules > div { gap: 2px; }
 .ee-hud.is-mobile .ee-help__setrow, .ee-hud.is-mobile .ee-help__setrow:last-child { grid-template-columns: 1fr; gap: 8px; }
@@ -705,6 +810,24 @@ button.ee-row:hover { background: #ECE7DC0D; }
 .ee-hud.is-mobile .ee-switch i { width: 20px; height: 20px; }
 .ee-hud.is-mobile .ee-switch[aria-checked="true"] i { transform: translateX(18px); }
 .ee-hud.is-mobile .ee-switch::after { content: ''; position: absolute; inset: -10px -4px; }
+
+/* the narrowest phones (360 px): the control row is ~50 px too wide for play, step, reset, speed and More; tighten
+   the gaps and the speed steppers (still 44 px tall) so the + never sits on More */
+@media (max-width: 379px) {
+  .ee-hud.is-mobile .ee-transport { column-gap: 10px; padding-left: 10px; padding-right: 10px; }
+  .ee-hud.is-mobile .ee-chips { margin: 0 -10px; }
+  .ee-hud.is-mobile .ee-drawer { margin-left: -10px; margin-right: -10px; }
+  .ee-hud.is-mobile .ee-tp__ctl { gap: 6px; }
+  .ee-hud.is-mobile .ee-tp__play { gap: 4px; }
+  .ee-hud.is-mobile .ee-speed { gap: 0; }
+  .ee-hud.is-mobile .ee-speed .ee-btn { width: 30px; }
+  .ee-hud.is-mobile .ee-speed__val { min-width: 46px; }
+  .ee-hud.is-mobile .ee-btn--more { padding: 0 8px 0 10px; }
+}
+@media (max-width: 339px) {
+  .ee-hud.is-mobile .ee-dock__b { min-width: 42px; padding: 1px 3px 0; }
+  .ee-hud.is-mobile .ee-dock__sep { margin: 0 2px; }
+}
 
 /* phones in landscape: title and log side by side, one control row with the timeline inline */
 .ee-hud.is-mobile.is-short .ee-col { top: max(8px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right)); }
@@ -722,8 +845,35 @@ button.ee-row:hover { background: #ECE7DC0D; }
 .ee-hud.is-mobile.is-short .ee-transport::before { display: none; }
 .ee-hud.is-mobile.is-short .ee-tl__track { height: 28px; }
 .ee-hud.is-mobile.is-short .ee-tl__mark { height: 28px; }
-.ee-hud.is-mobile.is-short .ee-stain { height: 40px; }
+.ee-hud.is-mobile.is-short .ee-stain { height: 44px; }
 .ee-hud.is-mobile.is-short .ee-drawer { max-height: 52vh; }
+/* The specimen band is too short to float the scene dock over: it joins the chip row, after the stains (which keep
+   scrolling), as a hairline pill group matching the stain chips. Inactive camera presets show their icon only. */
+.ee-hud.is-mobile.is-short .ee-chips { display: flex; align-items: center; gap: 8px; }
+.ee-hud.is-mobile.is-short .ee-chips .ee-stains {
+  flex: 1; min-width: 0; padding-right: 28px; scroll-padding-inline: 12px 28px;
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+}
+.ee-hud.is-mobile .ee-dock.is-inline {
+  position: static; flex: none; margin: 0 max(12px, env(safe-area-inset-right)) 0 0; padding: 1px;
+  border-radius: 23px; background: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+.ee-hud.is-mobile .ee-dock.is-inline .ee-dock__b { flex-direction: row; gap: 7px; width: auto; height: 44px; padding: 0 13px 0 11px; border-radius: 22px; font-size: 13px; letter-spacing: 0; }
+/* Frame opens the inline dock (first in the DOM there): it grows into the stains' side; the dock's own buttons stay */
+.ee-hud.is-mobile .ee-dock.is-inline .ee-dock__bar { position: static; }
+.ee-hud.is-mobile .ee-dock.is-inline .ee-dock__float {
+  position: static; align-items: center; padding: 0; border: 0; background: none; box-shadow: none; animation-name: ee-fade-in;
+}
+.ee-hud.is-mobile .ee-dock.is-inline .ee-dock__float::after { content: ''; flex: none; width: 1px; height: 22px; margin: 0 3px; background: var(--hair); }
+@keyframes ee-fade-in { from { opacity: 0; } }
+.ee-hud.is-mobile .ee-dock.is-inline .ee-dock__i svg { width: 16px; height: 16px; }
+.ee-hud.is-mobile .ee-dock.is-inline .ee-dock__b::before { left: 14px; right: 14px; }
+.ee-hud.is-mobile .ee-dock.is-inline :is(.ee-dock__b--cam[aria-checked="false"], .ee-dock__b--frame, .ee-dock__b--orbit) { padding: 0; justify-content: center; }
+.ee-hud.is-mobile .ee-dock.is-inline :is(.ee-dock__b--cam[aria-checked="false"], .ee-dock__b--frame, .ee-dock__b--orbit) .ee-dock__l {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+.ee-hud.is-mobile .ee-dock.is-inline .ee-dock__sep { height: 22px; }
+.ee-hud.is-mobile.is-short .ee-toast { bottom: calc(var(--tp-h, 130px) + 12px); }
 
 /* ─── touch-only devices: no key names (the hints and the guide name on-screen controls instead) ─────── */
 @media (hover: none) and (pointer: coarse) {
