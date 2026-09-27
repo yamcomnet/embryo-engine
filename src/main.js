@@ -334,7 +334,7 @@ function runEffect([kind, ...args]) {
 }
 
 // ─── worker I/O ─────────────────────────────────────────────────────────────────────────────────────────
-const clock = { visTick: 0, tick: 0, prevTick: 0, viewingId: null };
+const clock = { visTick: 0, tick: 0, prevTick: 0, viewingId: null, rateEst: 0, frameT: 0 };
 let latestStats = null, statsDirty = false, lastStatsPush = -1e9, lastTpsPatch = -1e9, lastLayout = -1e9;
 let heldFrames = [];
 let firstFrameSeen = false;
@@ -421,6 +421,14 @@ function ingest(f) {
   const viewingId = f.viewing ? f.viewing.snapId : null;
   if (f.prevTick === f.tick || viewingId !== clock.viewingId || f.tick < clock.tick) clock.visTick = f.tick;
   else if (f.tick - clock.visTick > 3 * (f.tick - f.prevTick)) clock.visTick = f.prevTick;
+  // Tick rate seen in the frames: the display clock's fallback until the worker has measured one (at "max" there is
+  // no target, and for its first ~0.3 s the clock ran at 1 t/s with 1-tick animations, which then all re-lit at once).
+  const fNow = performance.now();
+  if (f.running && f.tick > f.prevTick && f.prevTick === clock.tick && fNow - clock.frameT > 5 && fNow - clock.frameT < 250) {
+    const r = ((f.tick - f.prevTick) * 1000) / (fNow - clock.frameT);
+    clock.rateEst = clock.rateEst > 0 ? clock.rateEst + (r - clock.rateEst) * 0.25 : r;
+  } else if (!f.running) clock.rateEst = 0;
+  clock.frameT = fNow;
   clock.tick = f.tick; clock.prevTick = f.prevTick; clock.viewingId = viewingId;
   latestStats = f.stats; statsDirty = true; sceneDirty = true;
   // The worker is authoritative for running/viewing once it has handled our latest command.
@@ -704,7 +712,7 @@ function frame(now) {
 
   // display clock (SPEC §3.6.4). While paused, visTick may run up to τ past the last frame so the animations of
   // its final tick complete (visRel > 0 simply clamps every phase to 1).
-  const rate = state.running ? Math.max(latestStats?.tps?.actual || state.tps.target || 0, 1) : 2.5;
+  const rate = state.running ? Math.max(latestStats?.tps?.actual || state.tps.target || clock.rateEst || 0, 1) : 2.5;
   const rm = state.reducedMotion;
   const tauBirth = Math.max(1, (rm ? 0.12 : 0.40) * rate), tauDeath = Math.max(1, (rm ? 0.12 : 0.45) * rate), tauFate = Math.max(1, (rm ? 0.12 : 0.30) * rate);
   const hi = state.running && !state.viewing ? clock.tick : clock.tick + Math.max(tauBirth, tauDeath, tauFate);

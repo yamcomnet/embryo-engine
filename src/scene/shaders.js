@@ -245,13 +245,17 @@ void eeSetup(vec3 pos, vec3 nrm) {
     if (kind != 2 || ph >= 1.0) hide = 1.0;
     ph = clamp(ph, 0.0, 1.0);
     dying = ph;
+    // The ember is the light a dying cell gives up, so it cannot outshine the cell: a blazing cell (the T0 seeds'
+    // energy) simply fades, where an extra ember pushed it far over the bloom threshold, a 14–18% frame pulse when
+    // a seed died and a daughter refilled the gap a few frames later. It shares the flash's budget (cells.js).
+    float g0 = clamp(glow / 0.95, 0.0, 1.0);
     glow *= 1.0 - ph;
     if (uReduced > 0.5) fade = 1.0 - ph;
     else {
       hScale = pow(1.0 - ph, 0.7);
       sxz = 1.0 - 0.5 * ph;
       col = mix(col, EE_GHOST, ph);
-      if (tv >= 0.0) emis += EE_EMBER * (1.2 * exp(-5.0 * ph));
+      if (tv >= 0.0) emis += EE_EMBER * (1.2 * exp(-5.0 * ph) * (1.0 - g0 * g0) * uFlashScale);
     }
   } else if (kind == 1 && recent) {                  // birth: the daughter slides out of its parent
     if (tv < 0.0) hide = 1.0;
@@ -350,7 +354,10 @@ void eeSetup(vec3 pos, vec3 nrm) {
   if (uView >= 4) emis += col * 0.12;
   if (kind == 3 && recent && type > 0 && uReduced < 0.5 && tv >= 0.0)
     emis += uPalette[type] * (1.5 * exp(-6.0 * tv / uTau.z) * uFlashScale);   // commitment flash
-  emis += col * (2.2 * streak);                     // Apart flight: the streak glows in the cell's own colour
+  // Apart flight: the streak glows in the cell's own colour. The glow eases in over the first 15% of the cell's flight
+  // (≈ 0.18 s): the streak itself peaks at take-off, and every cell of a ring takes off on the same frame, so a
+  // full-strength glow from the first frame lifted the whole frame's brightness at once.
+  emis += col * (2.2 * streak * smoothstep(0.0, 0.15, p));
   if (uIsolate > 0 && shape != uIsolate) { emis *= 0.1; glowE *= 0.1; }
   emis *= nonMap;
   vGlow = glowE * nonMap;
@@ -670,24 +677,50 @@ void main() {
 export const CONE_VERT = /* glsl */`
 varying float vV;
 varying vec3 vN;
-varying vec3 vV2C;
+varying vec3 vW;
 void main() {
   vV = uv.y;
   vec4 w = modelMatrix * vec4(position, 1.0);
   vN = normalize(mat3(modelMatrix) * normal);
-  vV2C = normalize(cameraPosition - w.xyz);
+  vW = w.xyz;
   gl_Position = projectionMatrix * viewMatrix * w;
 }`;
 
+// The illuminator ring (HDR, over the bloom threshold) dims toward the frame's edges. The depth of field and the
+// bloom only gather what is on screen, so when the framing camera dollied fast (at "max" the embryo outgrows the
+// frame by a few units a frame) the ring's near arc slid in across the bottom edge in one frame, and its blur and
+// bloom appeared at once: a 7–10% pulse of the whole frame. Faded at the edge, it blooms in as it enters.
+export const RING_VERT = /* glsl */`
+varying vec3 vClip;
+void main() {
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vClip = gl_Position.xyw;
+}`;
+
+export const RING_FRAG = /* glsl */`
+uniform vec3 uCol;
+varying vec3 vClip;
+void main() {
+  vec2 ndc = vClip.xy / max(vClip.z, 1e-4);
+  gl_FragColor = vec4(uCol * smoothstep(0.0, 0.3, 1.0 - max(abs(ndc.x), abs(ndc.y))), 1.0);
+}`;
+
+// The curtain is additive and double-sided, and the framing camera can pass through it (a phone's auto-frame dollies
+// out across it as the embryo grows; the turntable swings an off-centre organism's camera in and out of it). Without
+// a fade its near wall appeared in front of every pixel the frame the camera crossed it, a full-screen veil that
+// pulsed the frame's brightness by up to 17%. The curtain is a haze of scattered light: seen from close by it is too
+// diffuse to see, so it fades in with distance and the crossing is continuous.
 export const CONE_FRAG = /* glsl */`
 uniform vec3 uCol;
 uniform float uI;
 varying float vV;
 varying vec3 vN;
-varying vec3 vV2C;
+varying vec3 vW;
 void main() {
-  float face = 1.0 - abs(dot(normalize(vN), normalize(vV2C)));
-  float a = uI * pow(vV, 2.2) * (0.25 + 0.75 * pow(face, 2.0));
+  vec3 toCam = cameraPosition - vW;
+  float dist = length(toCam);
+  float face = 1.0 - abs(dot(normalize(vN), toCam / max(dist, 1e-4)));
+  float a = uI * pow(vV, 2.2) * (0.25 + 0.75 * pow(face, 2.0)) * smoothstep(2.0, 60.0, dist);
   gl_FragColor = vec4(uCol * a, 1.0);
 }`;
 

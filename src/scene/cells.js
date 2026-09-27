@@ -19,8 +19,17 @@ const SHAPE_CAP_H = [0.5, 0.5, 0.26, 0.34, 0.3, 0.36, 0.3, 0.32];     // cap hei
 const SHAPE_UNDER = [1, 1, 0.22, 0.3, 0.26, 0.3, 0.26, 0.3];         // undercut: 1 = a full sphere (a pearl)
 const SKIRT = new Vector2(0.55, 1.16);   // groove depth (world units), skirt half-width scale (fills the pitch)
 const EMA_TAU = 0.12;                 // seconds; caps per-cell colour change at ~1.3 Hz
-const FLASH_BUDGET = 0.35;            // max share of visible cells whose commitment flashes may overlap at full strength
-const FLASH_RECOVER = 0.02;           // per ingested frame: the flash scale drops at once, recovers over ~1 s
+// Flash safety (WCAG 2.3.1): the event-driven emissive terms (the commitment flash and the death ember) share one
+// light budget on the mean transient emission per visible cell (linear luminance, the vertex shader's own envelopes):
+// a ceiling, and a limit on how much it may rise from one frame to the next (a wave of fate changes on a single tick,
+// ~35 of 800 cells, rose by 0.015 in one frame: a 7–10% pulse of the whole frame on a phone or a desktop).
+const TRANSIENT_MAX = 0.015;
+const TRANSIENT_RISE = 0.004;         // per 1/60 s
+const TRANSIENT_RECOVER_S = 1;        // the scale drops at once and recovers with this time constant (wall time)
+const FLASH_ENV = 6;                  // commitment flash: exp(−FLASH_ENV · tv / τ_fate), as in CELL_VERT
+const EMBER_ENV = 5;                  // death ember: exp(−EMBER_ENV · tv / τ_death)
+const lumOf = (c) => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+const EMBER_LUM = 1.2 * lumOf({ r: 1.0, g: 0.43, b: 0.162 });   // EE_EMBER × 1.2
 // Conservation glow ≈ E × GLOW_K: linear in energy at everyday levels (E ≲ 500, so the dish's emitted light tracks
 // the conserved total), with a soft knee at 0.95 (display pass) so the 37 T0 seeds (E ≈ 6,757) blaze without the
 // bloom whiting out the frame. SPEC's E × 0.0018 capped at 12 flooded the frame; see the scene notes.
@@ -115,6 +124,11 @@ export function createCells({ tier, palette = TISSUE_HEX }) {
   let idxCount = 0, eventCount = 0, flashScale = 1;
 
   const paletteLin = palette.map((h) => new Color(h));   // ColorManagement converts sRGB hex → linear
+  const flashLum = paletteLin.map((c) => 1.5 * lumOf(c));  // the commitment flash's peak luminance per type
+  // Cells whose latest event may still be glowing (a fate change or a death), gathered from the life texture at
+  // ingest: every event is in it, including any beyond the frame's event list (MAX_EVENTS_PER_FRAME).
+  const trAge = new Float32Array(N), trLum = new Float32Array(N);   // event age (ticks); peak lum (> 0 flash, < 0 ember)
+  let trCount = 0, transientLum = 0, transientShown = 0;
 
   // ── display pass: MRT ping-pong at 200×200 ──
   const makeTarget = () => new WebGLRenderTarget(GRID, GRID, {
@@ -264,17 +278,46 @@ export function createCells({ tier, palette = TISSUE_HEX }) {
       events.set(frame.events);
       let fates = 0;
       for (let e = 0; e < eventCount; e++) if ((events[e * EV_WORDS] & 0xff) === EV.FATE) fates++;
-      // Flash safety (WCAG 2.3.1): early fates arrive in synchronised waves, which pulsed the whole organism several
-      // times a second. Budget the flash by coverage instead: estimate the share of visible cells flashing at once
-      // (fate rate × flash length in ticks ÷ cells) and scale so the overlap stays within FLASH_BUDGET. The scale
-      // drops at once and recovers slowly, so consecutive waves cannot pump; a lone fate change still flashes fully.
-      const ticks = Math.max(1, (frame.tick - frame.prevTick) || 1);
-      const overlap = idxCount > 0 ? (fates / ticks) * U.uTau.value.z / idxCount : 0;
-      const target = overlap > FLASH_BUDGET ? FLASH_BUDGET / overlap : 1;
-      flashScale = target < flashScale ? target : flashScale + (target - flashScale) * FLASH_RECOVER;
-      U.uFlashScale.value = flashScale;
+      trCount = 0;
+      for (let k = 0; k < idxCount; k++) {
+        const o = 4 * idxArray[k], age = life[o + 2];
+        if (age >= 255) continue;                        // no recent event
+        const kind = life[o + 1] & 3, type = cell[o];
+        if (kind === 3 && type > 0) { trAge[trCount] = age; trLum[trCount++] = flashLum[type]; }
+        else if (kind === 2 && type === 0) { trAge[trCount] = age; trLum[trCount++] = -EMBER_LUM; }
+      }
       return fates;
     },
+
+    /** Flash safety (WCAG 2.3.1), every rendered frame, after the clock. Fate changes arrive in synchronised waves
+     *  (and at hundreds of ticks per second a whole wave lands inside one frame), which pulsed the whole organism.
+     *  Sum what the vertex shader is about to draw, the commitment flashes' and death embers' actual envelopes at
+     *  this frame's event clock, and scale both so their mean emission per visible cell stays under TRANSIENT_MAX
+     *  and rises by at most TRANSIENT_RISE a frame. Measured on the frame it is drawn, the budget holds whatever the
+     *  tick rate, the ticks per frame, a catch-up of the display clock or a change of τ. The scale drops at once and
+     *  recovers over ~1 s (wall time), so consecutive waves cannot pump; a lone fate change still flashes fully. */
+    updateTransients(dt) {
+      let sum = 0;
+      if (U.uReduced.value < 0.5 && trCount > 0 && idxCount > 0) {
+        const vr = DU.uVisRel.value, tf = FLASH_ENV / U.uTau.value.z, td = 1 / U.uTau.value.y;
+        for (let j = 0; j < trCount; j++) {
+          const tv = vr + trAge[j] + 1, L = trLum[j];     // visual ticks since the event (CELL_VERT's tv)
+          if (tv < 0) continue;
+          if (L > 0) { const x = tv * tf; if (x < 12) sum += L * Math.exp(-x); }
+          else { const ph = tv * td; if (ph < 1) sum -= L * Math.exp(-EMBER_ENV * ph); }
+        }
+        sum *= 1 - U.uFlat.value;
+      }
+      transientLum = idxCount > 0 ? sum / idxCount : 0;
+      const t = Math.max(dt, 0), rise = TRANSIENT_RISE * Math.min(2, Math.max(0.5, t * 60));
+      let scale = flashScale + (1 - flashScale) * (1 - Math.exp(-t / TRANSIENT_RECOVER_S));
+      if (transientLum > 0) scale = Math.min(scale, TRANSIENT_MAX / transientLum, (transientShown + rise) / transientLum);
+      flashScale = scale;
+      transientShown = scale * transientLum;
+      U.uFlashScale.value = flashScale;
+    },
+    /** QA: the unscaled mean transient emission per visible cell, and the scale applied (see updateTransients). */
+    get transients() { return { lum: transientLum, shown: transientShown, scale: flashScale, candidates: trCount }; },
 
     /** Snap the display EMA on the next pass (first frame, reset, snapshot, view change under reduced motion). */
     snap() { snapNext = true; },

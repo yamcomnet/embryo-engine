@@ -181,7 +181,10 @@ export function createSpecimen(renderer, { cellTextures, displayUniforms, cellUn
   // ── darkfield illuminator: the annular ring below the stage and a faint light curtain ──
   const ringGeo = keep(new TorusGeometry(RING_R, 0.42, 12, 360));
   ringGeo.rotateX(Math.PI / 2);
-  const ringMat = keep(new MeshBasicMaterial({ color: new Color('#d9e6ff').multiplyScalar(1.9) }));
+  const ringMat = keep(new ShaderMaterial({
+    vertexShader: S.RING_VERT, fragmentShader: S.RING_FRAG,
+    uniforms: { uCol: { value: new Color('#d9e6ff').multiplyScalar(1.9) } },
+  }));
   const ring = new Mesh(ringGeo, ringMat);
   ring.position.y = -2.2;
   root.add(ring);

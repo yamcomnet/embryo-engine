@@ -800,6 +800,7 @@ export async function createStage(canvas, {
 
       // display pass, motes, set, shadows, post
       cells.updateDisplay(renderer, dt);
+      cells.updateTransients(dt);
       motes.update(st.lastTick, st.clock.visRel, st.flat, st.explodeS > 0.02);
       renderer.getDrawingBufferSize(bufSize);
       // haze: just above the dish's far rim, behind the organism
