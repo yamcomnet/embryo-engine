@@ -19,6 +19,8 @@ const SHAPE_CAP_H = [0.5, 0.5, 0.26, 0.34, 0.3, 0.36, 0.3, 0.32];     // cap hei
 const SHAPE_UNDER = [1, 1, 0.22, 0.3, 0.26, 0.3, 0.26, 0.3];         // undercut: 1 = a full sphere (a pearl)
 const SKIRT = new Vector2(0.55, 1.16);   // groove depth (world units), skirt half-width scale (fills the pitch)
 const EMA_TAU = 0.12;                 // seconds; caps per-cell colour change at ~1.3 Hz
+const FLASH_BUDGET = 0.35;            // max share of visible cells whose commitment flashes may overlap at full strength
+const FLASH_RECOVER = 0.02;           // per ingested frame: the flash scale drops at once, recovers over ~1 s
 // Conservation glow ≈ E × GLOW_K: linear in energy at everyday levels (E ≲ 500, so the dish's emitted light tracks
 // the conserved total), with a soft knee at 0.95 (display pass) so the 37 T0 seeds (E ≈ 6,757) blaze without the
 // bloom whiting out the frame. SPEC's E × 0.0018 capped at 12 flooded the frame; see the scene notes.
@@ -110,7 +112,7 @@ export function createCells({ tier, palette = TISSUE_HEX }) {
   const idxArray = new Uint16Array(N);
   const idxAttr = new InstancedBufferAttribute(idxArray, 1);
   idxAttr.setUsage(DynamicDrawUsage);
-  let idxCount = 0, eventCount = 0;
+  let idxCount = 0, eventCount = 0, flashScale = 1;
 
   const paletteLin = palette.map((h) => new Color(h));   // ColorManagement converts sRGB hex → linear
 
@@ -262,8 +264,15 @@ export function createCells({ tier, palette = TISSUE_HEX }) {
       events.set(frame.events);
       let fates = 0;
       for (let e = 0; e < eventCount; e++) if ((events[e * EV_WORDS] & 0xff) === EV.FATE) fates++;
-      // Flash safety: halve the commitment flash when more than a quarter of the visible cells flash at once.
-      U.uFlashScale.value = idxCount > 0 && fates > 0.25 * idxCount ? 0.5 : 1;
+      // Flash safety (WCAG 2.3.1): early fates arrive in synchronised waves, which pulsed the whole organism several
+      // times a second. Budget the flash by coverage instead: estimate the share of visible cells flashing at once
+      // (fate rate × flash length in ticks ÷ cells) and scale so the overlap stays within FLASH_BUDGET. The scale
+      // drops at once and recovers slowly, so consecutive waves cannot pump; a lone fate change still flashes fully.
+      const ticks = Math.max(1, (frame.tick - frame.prevTick) || 1);
+      const overlap = idxCount > 0 ? (fates / ticks) * U.uTau.value.z / idxCount : 0;
+      const target = overlap > FLASH_BUDGET ? FLASH_BUDGET / overlap : 1;
+      flashScale = target < flashScale ? target : flashScale + (target - flashScale) * FLASH_RECOVER;
+      U.uFlashScale.value = flashScale;
       return fates;
     },
 

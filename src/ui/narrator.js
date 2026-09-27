@@ -195,7 +195,7 @@ const STORY = [
   // The intro is always shown for the first hold (3 s), so it carries Rule 1: the cleavage chapter (T1–T13) is
   // usually over before the hold ends.
   T('intro', 'story', (s) => s.tick === 0, ($, s, st) => [
-    $.n('seedCount'), ' identical ', $.t(STEM), ' cells share ', $.n('energy.initial'), ' units of energy, ',
+    $.n('seedCount'), ' ', $.t(STEM), ' cells, alike but for a little noise, share ', $.n('energy.initial'), ' units of energy, ',
     $.n('d.perCell', 'e1'), ' each. One conservation law and three rules; two guiding signals centred on the embryo mark its midline and front. The first rule, ',
     $.rule(1), ': a cell holding more than ', $.n('energy.thrStem'), ' splits into an empty neighbouring spot, and each half keeps half.',
     st?.running ? '' : ' Press play to begin.',

@@ -1,0 +1,12 @@
+// Cloudflare deploy: the static app served as Worker static assets on embryo.yamcom.net.
+// Deploy from the repo root with `wrangler deploy`; .assetsignore keeps everything that isn't the app out.
+{
+  "name": "embryo-engine",
+  "compatibility_date": "2026-09-27",
+  "assets": {
+    "directory": "."
+  },
+  "routes": [
+    { "pattern": "embryo.yamcom.net", "custom_domain": true }
+  ]
+}

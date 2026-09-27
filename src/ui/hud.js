@@ -22,7 +22,7 @@ const { STEM, ECTO, MESO, ENDO, NEURAL, MUSCLE, VESSEL } = TYPE;
 const MOBILE_MQ = '(max-width: 759px), (max-height: 499px) and (pointer: coarse)';
 // Touch-only devices get no key names (the CSS hides <kbd> chips under the same query).
 const TOUCH = typeof matchMedia === 'function' && matchMedia('(hover: none) and (pointer: coarse)').matches;
-const SUBTITLE = (n) => `${n ? numberWord(n) + ' identical' : 'Identical'} cells, one fixed pot of energy, three rules and four signals.`;
+const SUBTITLE = (n) => `${n ? numberWord(n) : 'A few'} stem cells, one fixed pot of energy, three rules and four signals.`;
 const ORDER = [ECTO, NEURAL, MESO, MUSCLE, VESSEL, ENDO, STEM];   // legend: skin to core, grouped by family
 const LOG_LINES = 4;                                             // live line + 3 frozen
 const NARRATE_MS = 250;                                          // narrator at 4 Hz
@@ -1590,7 +1590,7 @@ export function createHud(root, { dispatch } = {}) {
           h('p', {}, 'So: an honest toy, not an embryo. Cells never move, the head–tail axis is handed to them, and Rule 3 decides the order of the layers. It proves nothing about whether we live in a simulation. But some of what you see does organise itself: Turing spots carving muscle blocks, a body whose size is set by its energy budget, a stem core that keeps renewing itself. If someone out there is running us, we hope they are enjoying the show as much as we enjoy this one.')),
         section('ee-h-what', 'What you’re looking at',
           h('p', {}, 'A simulated embryo, lit like a darkfield specimen: only light scattered by living tissue reaches you, so cells glow against black. The dish holds a ',
-            n(GRID), ' × ', n(GRID), ' grid of places a cell can occupy, wrapped at the edges like a torus. The run began with ', n(sc), ' identical ', tw(STEM), ' cells and a fixed ',
+            n(GRID), ' × ', n(GRID), ' grid of places a cell can occupy, wrapped at the edges like a torus. The run began with ', n(sc), ' ', tw(STEM), ' cells, alike but for a little random noise in their lifespans and activator levels, and a fixed ',
             n(E0), ' units of energy. Every cell, colour, glow, label and number is drawn from the running simulation. One tick is one step: every cell applies the rules once.')),
         section('ee-h-rules', 'The law, three rules and four signals',
           h('dl', { class: 'ee-help__rules' },
@@ -1611,7 +1611,7 @@ export function createHud(root, { dispatch } = {}) {
                 tw(VESSEL), ' below ', n(P.gates?.vesselRel, fmtX), '×. ', tw(NEURAL, 'Neural'), ', muscle and vessel cells keep their fate',
                 P.hysteresis?.terminalRevert ? [' unless they sit outside their band for ', n(P.hysteresis.terminalRevert), ' ticks'] : '', '.')),
             h('div', {}, h('dt', {}, h('em', { class: 'ee-rule' }, 'Signals'), ' Four fields'),
-              h('dd', {}, 'Four fields diffuse and fade across the tissue. The midline signal is laid down along a line through the embryo’s centre, and the A–P (anterior–posterior, head–tail) signal rises toward one side of the dish, the anterior; ',
+              h('dd', {}, 'Four fields diffuse and fade across the dish, empty places included. The midline signal is laid down along a line through the embryo’s centre, and the A–P (anterior–posterior, head–tail) signal rises toward one side of the dish, the anterior; ',
                 tw(NEURAL, 'neural'), ' cells add to both, ', tw(MESO, 'mesoderm'), ' and ', tw(MUSCLE, 'muscle'), ' add to A–P. The activator amplifies itself and makes an inhibitor that spreads ',
                 n(P.diffusion?.rates ? P.diffusion.rates[1] / P.diffusion.rates[0] : NaN, fmtX), '× faster: together they form spots and stripes on their own.'))),
           h('p', { class: 'ee-help__note' }, 'Holes left inside by deaths are not surfaces; only the outside counts. Hysteresis keeps cells on a band boundary from flickering between fates. The founders all take a fate before the embryo is thick enough to have a core: the core first forms from buried endoderm (and early muscle) turning back into stem, then renews itself by division.'),

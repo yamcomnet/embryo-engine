@@ -1,0 +1,17 @@
+# Files in the repo that are not part of the published app (gitignore syntax).
+.git
+.github
+.claude
+.wrangler
+node_modules
+.DS_Store
+.nojekyll
+wrangler.jsonc
+package.json
+package-lock.json
+README.md
+embryo-engine.jsx
+dev/
+docs/
+test/
+screenshot.png

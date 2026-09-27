@@ -1,0 +1,4 @@
+# Local tooling and OS files
+.wrangler/
+node_modules/
+.DS_Store

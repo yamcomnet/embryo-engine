@@ -144,7 +144,7 @@ test('narrate(): context outranks story, and the story follows the embryo', () =
   for (const [view, id] of Object.entries(byView)) assert.equal(at(8, { view }), id);
   assert.equal(narrateContext(BASE[8], { view: 'cells' }, ctxFor(BASE[8], MOCK_PARAMS)), null);
   const r = narrate(BASE[0], { view: 'cells', running: false, params: MOCK_PARAMS }, ctxFor(BASE[0], MOCK_PARAMS));
-  assert.match(partsText(r.parts), /37 identical stem cells share 250,000 units/);
+  assert.match(partsText(r.parts), /37 stem cells, alike but for a little noise, share 250,000 units/);
   // a steady embryo keeps changing sentence as ticks pass (pure rotation by tick)
   const ids = new Set();
   for (let t = 3000; t < 9000; t += 400) { const s = { ...clone(BASE[9]), tick: t }; ids.add(narrateStory(s, { view: 'cells' }, ctxFor(s, MOCK_PARAMS)).id); }

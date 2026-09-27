@@ -1,10 +1,10 @@
 # Embryo Engine v1.0: the simulation core
 
-`src/engine.js` grows an embryo from 37 identical cells on a 200 × 200 torus. One conservation law, three rules and four signal fields produce four concentric germ layers, an anterior neural plate, and a mesoderm ring that a Turing activator–inhibitor pattern breaks into blocks of muscle separated by vessel.
+`src/engine.js` grows an embryo from 37 stem cells (alike but for a little noise in lifespan and activator) on a 200 × 200 torus. One conservation law, three rules and four signal fields produce four concentric germ layers, an anterior neural plate, and a mesoderm ring that a Turing activator–inhibitor pattern breaks into blocks of muscle separated by vessel.
 
 What is local and what is not: Rules 1 and 2 involve only a cell and its neighbours. Rule 3 reads a cell's depth below the outer surface against band edges scaled to the whole embryo's depth, and the muscle/vessel reference is the mean activator of every live cell at the same depth. The midline and A–P signals are positional information laid down around the embryo's centroid, with anterior fixed to the grid's −y side. So the order of the layers is what Rule 3 assigns, and the neural plate sits where the two imposed gradients overlap. What organises itself is the activator–inhibitor pattern and the muscle blocks it carves, the embryo's size, its turnover, and the self-renewing stem core. No cell ever moves, so this is layering by position, not gastrulation by cell migration.
 
-v1.0 rebuilds the v0.9 engine after an audit that found 46 problems. The main ones: energy leaked, the inhibitor field was a numerical checkerboard, the "Turing" kinetics could not form patterns, and the layering came from transient death-holes, not from the body surface. Every number on this page was measured on the shipped engine, over 5 seeds and 20,000 ticks, unless it says otherwise.
+v1.0 rebuilds the v0.9 engine after an audit that recorded 46 findings. The main ones: energy leaked, the inhibitor field was a numerical checkerboard, the "Turing" kinetics could not form patterns, and the layering came from transient death-holes, not from the body surface. Every number on this page was measured on the shipped engine, over 5 seeds and 20,000 ticks, unless it says otherwise.
 
 | T1,000 | T5,000 | T20,000 | Activator, T5,000 |
 |---|---|---|---|
