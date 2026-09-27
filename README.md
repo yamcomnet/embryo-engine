@@ -250,4 +250,4 @@ node --test test/
 
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 Thomas Yambasu
