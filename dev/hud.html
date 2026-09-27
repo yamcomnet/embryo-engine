@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HUD harness — Embryo Engine</title>
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:,">
+<style>html, body { margin: 0; height: 100%; background: #050605; color: #ECE7DC; overflow: hidden; }</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..600&family=Instrument+Sans:wght@400..600&family=JetBrains+Mono:wght@400..500&display=swap">
+<link rel="stylesheet" href="../styles.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.183.2/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.183.2/examples/jsm/"
+} }
+</script>
+<style>
+  /* dev-only chrome: the size frame (?w=) and the state panel */
+  .dev-frame { position: fixed; inset: 0; display: grid; place-items: center; background: #111; }
+  .dev-frame iframe { border: 1px solid #333; background: #050605; }
+  .dev-frame p { position: fixed; top: 8px; left: 12px; margin: 0; font: 12px ui-monospace, monospace; color: #999; }
+  #dev { position: fixed; right: 24px; top: 440px; z-index: 50; width: 212px; font: 12px/1.3 ui-monospace, monospace; color: #bbb; pointer-events: auto; }
+  #dev summary { cursor: pointer; padding: 4px 8px; border: 1px dashed #ffffff33; border-radius: 4px; list-style: none; text-align: right; }
+  #dev[open] summary { margin-bottom: 6px; }
+  #dev .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 8px; background: #0b0c0bee; border: 1px dashed #ffffff33; border-radius: 4px; max-height: 50vh; overflow: auto; }
+  #dev button { font: 11px ui-monospace, monospace; color: #ddd; background: #1a1c1a; border: 1px solid #333; border-radius: 3px; padding: 4px; cursor: pointer; }
+  #dev button:hover { border-color: #666; }
+  #dev .wide { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<main class="ee-main" aria-label="Specimen view">
+<canvas id="stage" role="img" aria-label="Placeholder specimen (HUD harness)"></canvas>
+<div id="labels" aria-hidden="true"></div>
+</main>
+<div id="hud"></div>
+<script type="module">
+// HUD harness: the real HUD (src/ui) driven by dev/mock-frames.js, with a dev reducer standing in for main.js.
+// URL params: cells tick seed run view apart iso cam viewing(milestone key | kf) pin hover(idx|auto) help progress(0..1)
+//             fallback(reason) error(msg) hint(text) lost(amount) rm ready(0) speed quality panel(0) labels(0) w h
+import {
+  makeMockFrame, makeMockStats, makeMockMilestones, makeMockThumbTypes, makeMockCellDetail, makeMockReady,
+  MOCK_PARAMS, MOCK_FIELD_INFO,
+} from './mock-frames.js';
+import { createHud } from '../src/ui/hud.js';
+import { bindKeys } from '../src/ui/keys.js';
+import { GRID, TISSUE_HEX, SPEEDS, CAMERA_PRESETS, QUALITY_MODES, MILESTONES, VIEWS, FAMILY_OF_TYPE } from '../src/shared.js';
+import { RAMPS, BAND_HEX, fieldPos } from '../src/ui/ramps.js';
+
+const q = new URLSearchParams(location.search);
+const num = (k, d) => (q.has(k) ? Number(q.get(k)) : d);
+
+// ── ?w= : show this page inside an iframe of that size (media queries follow the iframe) ──
+if (q.has('w') && !q.has('inner')) {
+  const w = num('w', 390), h = num('h', 844);
+  const src = new URL(location.href); src.searchParams.set('inner', '1');
+  document.body.innerHTML = `<div class="dev-frame"><p>${w} × ${h}</p><iframe src="${src}" width="${w}" height="${h}" title="HUD at ${w}×${h}"></iframe></div>`;
+  await new Promise(() => {}); // park this module for good; the iframe runs the harness
+}
+
+const ready = makeMockReady({ seed: num('seed', 1) });
+const PARAMS = MOCK_PARAMS, FIELD_INFO = MOCK_FIELD_INFO;
+let liveFrame = makeFrame(num('cells', 3000), num('tick', 2500));
+let shownFrame = liveFrame;
+let stats = null;
+const thumbs = new Map();
+
+function makeFrame(cells, tick) {
+  return tick === 0 ? makeMockFrame({ cells: 37, tick: 0, seed: ready.seed }) : makeMockFrame({ cells, tick, seed: ready.seed });
+}
+
+// ── AppState (§G.3) ──
+let state = {
+  ready: q.get('ready') !== '0', stageReady: q.get('stage') !== '0', error: null, seed: ready.seed, seedCount: ready.seedCount, engineVersion: ready.engineVersion,
+  params: PARAMS, fieldInfo: FIELD_INFO,
+  running: q.get('run') === '1', speedIndex: num('speed', 3), tps: { target: 60, actual: 58 },
+  view: q.get('view') || 'cells', isolate: q.has('iso') ? num('iso', null) : null, exploded: q.get('apart') === '1',
+  camera: q.get('cam') || 'specimen', autoFrame: q.get('follow') !== '0',
+  viewing: null, milestones: [], snapshots: [],
+  hover: null, pinned: null,
+  quality: { mode: q.get('quality') || 'auto', tier: 'medium', dpr: 1.5 }, reducedMotion: q.get('rm') === '1',
+  helpOpen: q.get('help') === '1', progress: null,
+};
+let wasRunning = state.running;
+
+const hud = createHud(document.getElementById('hud'), { dispatch });
+window.__hud = hud; window.__state = () => state; window.__dispatch = dispatch;
+bindKeys(window, { dispatch, getState: () => state });
+
+function setState(patch) { state = { ...state, ...patch }; hud.render(state); draw(); }
+
+function milestonesAt(tick) {
+  const list = makeMockMilestones(tick);
+  for (const m of list) if (m.tick !== null) m.thumb = thumbFor(m.key, m.tick);
+  return list;
+}
+function thumbFor(key, tick) {
+  if (thumbs.has(key)) return thumbs.get(key);
+  const s = stats?.milestoneStats?.[key];
+  const cells = s ? s.typeCounts.reduce((a, b) => a + b, 0) : 37;
+  const f = makeFrame(Math.max(37, cells), tick);
+  const types = makeMockThumbTypes(f);
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const ctx = c.getContext('2d'); const img = ctx.createImageData(128, 128);
+  const rgb = TISSUE_HEX.map((hx) => [1, 3, 5].map((i) => parseInt(hx.slice(i, i + 2), 16)));
+  for (let i = 0; i < types.length; i++) {
+    const t = types[i]; const [r, g, b] = t ? rgb[t] : [5, 6, 5];
+    img.data.set([r, g, b, 255], i * 4);
+  }
+  ctx.putImageData(img, 0, 0);
+  thumbs.set(key, c);
+  return c;
+}
+function snapshotsAt(tick, milestones) {
+  const list = milestones.filter((m) => m.snapId).map((m) => ({ snapId: m.snapId, tick: m.tick, kind: 'milestone', key: m.key }));
+  for (let t = 1000; t <= tick; t += 1000) list.push({ snapId: 100 + t / 1000, tick: t, kind: 'keyframe' });
+  return list.sort((a, b) => a.tick - b.tick);
+}
+
+function publish() {
+  stats = makeMockStats(shownFrame);
+  if (q.has('lost')) { stats.energy.lost = num('lost', 0); stats.energy.total -= stats.energy.lost; }
+  if (!state.viewing) {
+    const ms = milestonesAt(liveFrame.tick);
+    state = { ...state, milestones: ms, snapshots: snapshotsAt(liveFrame.tick, ms), tps: { target: SPEEDS[state.speedIndex], actual: stats.tps.actual } };
+  }
+  hud.setStats(stats, state);
+  draw();
+  refreshInspector();
+}
+
+// ── dev reducer: the §G.4 actions ──
+function dispatch(a) {
+  const s = state;
+  switch (a.type) {
+    case 'toggleRun': return setState({ running: !s.running });
+    case 'run': return setState({ running: true });
+    case 'pause': return setState({ running: false });
+    case 'step': liveFrame = makeMockFrame({ prev: liveFrame, tick: liveFrame.tick + (a.n || 1) }); if (!s.viewing) shownFrame = liveFrame; setState({ running: false }); return publish();
+    case 'reset': case 'newSeed':
+      thumbs.clear();
+      if (a.type === 'newSeed') state.seed = 1 + Math.floor(Math.random() * 99999);
+      liveFrame = shownFrame = makeFrame(37, 0); setState({ viewing: null, pinned: null, hover: null }); hud.setInspector(null, null);
+      if (a.type === 'newSeed') hud.setHint(`New seed ${state.seed}`);
+      return publish();
+    case 'speed': return setState({ speedIndex: Math.max(0, Math.min(SPEEDS.length - 1, a.index)) });
+    case 'speedDelta': return setState({ speedIndex: Math.max(0, Math.min(SPEEDS.length - 1, s.speedIndex + a.delta)) });
+    case 'view': return setState({ view: a.id });
+    case 'isolate': return setState({ isolate: a.isolate ?? null });
+    case 'toggleExplode': return setState({ exploded: !s.exploded });
+    case 'explode': return setState({ exploded: !!a.on });
+    case 'camera': return setState({ camera: a.preset, autoFrame: true });
+    case 'cycleCamera': return setState({ camera: CAMERA_PRESETS[(CAMERA_PRESETS.indexOf(s.camera) + 1) % CAMERA_PRESETS.length] });
+    case 'frame': return setState({ autoFrame: true });
+    case 'orbit': case 'zoom': return setState({ autoFrame: false });
+    case 'milestone': { const m = s.milestones.find((x) => x.key === a.key); if (m && m.snapId) return view(m.snapId); return; }
+    case 'viewSnapshot': return view(a.snapId);
+    case 'milestoneDelta': {
+      const reached = s.milestones.filter((m) => m.snapId).sort((x, y) => x.tick - y.tick);
+      if (!reached.length) return;
+      const cur = s.viewing ? reached.findIndex((m) => m.snapId === s.viewing.snapId) : reached.length;
+      const next = reached[Math.max(0, Math.min(reached.length - 1, cur + a.delta))];
+      return view(next.snapId);
+    }
+    case 'live': if (!s.viewing) return; shownFrame = liveFrame; setState({ viewing: null, running: wasRunning }); return publish();
+    case 'resume': if (!s.viewing) return; liveFrame = shownFrame; setState({ viewing: null, running: true }); return publish();
+    case 'hover': return setState({ hover: a.idx });
+    case 'pin': setState({ pinned: a.idx }); refreshInspector(); return;
+    case 'quality': return setState({ quality: { ...s.quality, mode: a.mode, tier: a.mode === 'auto' ? 'medium' : a.mode } });
+    case 'cycleQuality': { const m = QUALITY_MODES[(QUALITY_MODES.indexOf(s.quality.mode) + 1) % QUALITY_MODES.length]; hud.setHint(`Quality: ${m}`, 2000); return dispatch({ type: 'quality', mode: m }); }
+    case 'help': return setState({ helpOpen: !!a.open });
+    case 'toggleHelp': return setState({ helpOpen: !s.helpOpen });
+    case 'escape':
+      if (s.helpOpen) return setState({ helpOpen: false });
+      if (s.pinned !== null) { setState({ pinned: null }); return refreshInspector(); }
+      if (s.viewing) return dispatch({ type: 'live' });
+      return;
+    case 'reducedMotion': return setState({ reducedMotion: !!a.on });
+    case 'share': return hud.setHint(`Link copied · seed ${s.seed} · T ${shownFrame.tick.toLocaleString('en-US')}`);
+    default: console.warn('[harness] unhandled action', a);
+  }
+}
+
+function view(snapId) {
+  const snap = state.snapshots.find((x) => x.snapId === snapId);
+  if (!snap) return;
+  if (!state.viewing) wasRunning = state.running;
+  const ms = stats?.milestoneStats?.[snap.key];
+  const cells = ms ? ms.typeCounts.reduce((a, b) => a + b, 0) : Math.round(liveFrame.idxCount * Math.pow(snap.tick / Math.max(1, liveFrame.tick), 0.6));
+  shownFrame = makeFrame(Math.max(37, cells), snap.tick);
+  setState({ viewing: { snapId, tick: snap.tick, key: snap.key }, running: false });
+  publish();
+}
+
+// ── placeholder specimen: a fake 3/4 projection of the mock organism ──
+const canvas = document.getElementById('stage');
+const ctx2 = canvas.getContext('2d');
+let proj = { s: 4, cx: 0, cy: 0, squash: 0.55 };
+function hexRgb(hx) { return [1, 3, 5].map((i) => parseInt(hx.slice(i, i + 2), 16)); }
+const TISSUE_RGB = TISSUE_HEX.map(hexRgb), BAND_RGB = BAND_HEX.map(hexRgb);
+function rampRgb(stops, t) {
+  let i = 0; while (i < stops.length - 2 && stops[i + 1][0] < t) i++;
+  const [p0, c0] = stops[i], [p1, c1] = stops[i + 1]; const f = Math.min(1, Math.max(0, (t - p0) / (p1 - p0 || 1)));
+  const a = hexRgb(c0), b = hexRgb(c1); return a.map((v, k) => Math.round(v + (b[k] - v) * f));
+}
+function project(idx) {
+  const x = (idx % GRID) - 99.5, z = ((idx / GRID) | 0) - 99.5;
+  const d = shownFrame.cell[4 * idx + 2];
+  const hTop = state.camera === 'map' ? 0 : 0.6 + 1.9 * Math.sqrt(Math.min(254, d || 1));
+  const fam = FAMILY_OF_TYPE[shownFrame.cell[4 * idx]] ?? 0;
+  const lift = state.exploded ? (fam - 1.5) * 26 * proj.s * 0.2 : 0;
+  return { x: proj.cx + x * proj.s, y: proj.cy + z * proj.s * proj.squash - hTop * proj.s * 0.55 + lift, visible: true };
+}
+function draw() {
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  const W = innerWidth, H = innerHeight;
+  if (canvas.width !== W * dpr || canvas.height !== H * dpr) { canvas.width = W * dpr; canvas.height = H * dpr; }
+  ctx2.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const g = ctx2.createRadialGradient(W / 2, H * 0.52, 10, W / 2, H * 0.52, Math.max(W, H) * 0.7);
+  g.addColorStop(0, '#0b0d0c'); g.addColorStop(0.6, '#050605'); g.addColorStop(1, '#030303');
+  ctx2.fillStyle = g; ctx2.fillRect(0, 0, W, H);
+  if (!stats) return;
+  const rMax = Math.max(6, stats.geom.rMax);
+  const cam = state.camera;
+  const mobile = W < 760;
+  const squash = cam === 'map' ? 1 : cam === 'close' ? 0.6 : 0.55;
+  const s = cam === 'map' ? 0.36 * Math.min(W, H) / rMax : cam === 'close' ? (mobile ? 0.42 : 0.2) * W / rMax : 0.3 * W / 112;
+  proj = { s, cx: W / 2, cy: H * (mobile ? 0.42 : 0.5), squash };
+  // darkfield ring
+  if (cam !== 'map') {
+    ctx2.save(); ctx2.translate(proj.cx, proj.cy + 6 * s); ctx2.scale(1, squash);
+    ctx2.strokeStyle = 'rgba(207,224,255,.55)'; ctx2.lineWidth = 2 / squash; ctx2.shadowColor = '#CFE0FF'; ctx2.shadowBlur = 24;
+    ctx2.beginPath(); ctx2.arc(0, 0, 118 * s, 0, Math.PI * 2); ctx2.stroke();
+    ctx2.strokeStyle = 'rgba(236,231,220,.08)'; ctx2.shadowBlur = 0; ctx2.lineWidth = 1 / squash;
+    ctx2.beginPath(); ctx2.arc(0, 0, 112 * s, 0, Math.PI * 2); ctx2.stroke();
+    ctx2.restore();
+  }
+  const f = shownFrame, view = state.view, info = MOCK_FIELD_INFO.find((x) => x.key === view);
+  const sz = Math.max(1.5, s * 0.92);
+  for (let y = 0; y < GRID; y++) for (let x = 0; x < GRID; x++) {
+    const i = y * GRID + x, t = f.cell[4 * i]; if (!t) continue;
+    let rgb;
+    if (view === 'cells') rgb = TISSUE_RGB[t];
+    else if (view === 'depth') rgb = BAND_RGB[f.cell[4 * i + 1]] || [40, 40, 40];
+    else if (view === 'energy') { const e = Math.pow(2, (f.cell[4 * i + 3] / 255) * 13) - 1; rgb = rampRgb(RAMPS.energy, Math.min(1, e / (t === 1 ? 30 : 42) / 2)); }
+    else if (view === 'age') rgb = rampRgb(RAMPS.age, f.life[4 * i] / 255);
+    else if (f.morph && info) rgb = rampRgb(RAMPS[view], fieldPos(f.morph[4 * i + info.channel], info));
+    else rgb = [60, 60, 60];
+    const dim = state.isolate && view === 'cells' && t !== state.isolate ? 0.18 : 1;
+    const p = project(i);
+    ctx2.fillStyle = `rgb(${rgb[0] * dim * 0.55},${rgb[1] * dim * 0.55},${rgb[2] * dim * 0.55})`;
+    ctx2.fillRect(p.x - sz / 2, p.y, sz, sz * 0.9);
+    ctx2.fillStyle = `rgb(${rgb[0] * dim},${rgb[1] * dim},${rgb[2] * dim})`;
+    ctx2.fillRect(p.x - sz / 2, p.y - sz * squash * 0.5, sz, sz * squash);
+  }
+  drawLabels();
+}
+
+// annotations: the scene's real label module (src/scene/labels.js), driven through an affine fake camera that
+// reproduces the placeholder projection, so the harness shows production label DOM with styles.css applied.
+const labelsRoot = document.getElementById('labels');
+let labels = null, Matrix4 = null;
+if (q.get('labels') !== '0') {
+  try {
+    [{ createLabels: labels }, { Matrix4 }] = await Promise.all([import('../src/scene/labels.js'), import('three')]);
+    labels = labels(labelsRoot, { max: innerWidth < 760 ? 3 : 6 });
+  } catch (err) { console.warn('[harness] labels.js unavailable:', err.message); labels = null; }
+}
+function drawLabels() {
+  if (!labels || !stats) return;
+  const W = innerWidth, H = innerHeight;
+  const cam = { matrixWorldInverse: new Matrix4(), projectionMatrix: new Matrix4().set(
+    2 * proj.s / W, 0, 0, 2 * proj.cx / W - 1,
+    0, 2 * proj.s * 0.55 / H, -2 * proj.s * proj.squash / H, 1 - 2 * proj.cy / H,
+    0, 0, 0, 0,
+    0, 0, 0, 1) };
+  const g = stats.geom, top = (d) => (state.camera === 'map' ? 0 : 0.6 + 1.9 * Math.sqrt(d));
+  labels.hideAll();
+  if (!state.exploded) {
+    labels.set('anterior', { priority: 1, text: 'Anterior ↑', x: g.cx - 99.5, y: top(1), z: g.cy - g.rMax - 4 - 99.5 });
+    if (g.neural.count >= 10) labels.set('neural', { priority: 2, text: 'Neural plate', value: g.neural.count.toLocaleString('en-US'), swatch: TISSUE_HEX[5], x: g.neural.cx - 99.5, y: top(2), z: g.neural.cy - 99.5 });
+    labels.set('ecto', { priority: 3, text: 'Ectoderm', value: stats.typeCounts[2].toLocaleString('en-US'), swatch: TISSUE_HEX[2], x: g.cx + g.rMax - 1 - 99.5, y: top(1), z: g.cy + 4 - 99.5 });
+    labels.set('stem', { priority: 4, text: 'Stem core', value: stats.typeCounts[1].toLocaleString('en-US'), swatch: TISSUE_HEX[1], x: g.cx - 99.5, y: top(g.dmax), z: g.cy - 99.5 });
+    if (stats.typeCounts[6] >= 10) labels.set('muscle', { priority: 5, text: 'Muscle blocks', value: stats.typeCounts[6].toLocaleString('en-US'), swatch: TISSUE_HEX[6], x: g.cx - g.rMax * 0.55 - 99.5, y: top(4), z: g.cy + g.rMax * 0.5 - 99.5 });
+  }
+  // the organism's screen ellipse (notes lead away from it) and the HUD panels (notes keep clear of them), as in the app
+  const rx = proj.s * g.rMax;
+  if (typeof hud !== 'undefined' && hud.layout) labels.setExclusions(hud.layout().rects);
+  labels.update(cam, W, H, { x: proj.cx, y: proj.cy, rx, ry: Math.max(rx * 0.55, 1) });
+}
+
+// hover / pin on the placeholder
+function pick(clientX, clientY) {
+  let best = null, bd = Math.max(6, proj.s * 1.2);
+  const f = shownFrame;
+  for (let k = 0; k < f.idxCount; k++) {
+    const i = f.idx[k]; if (!f.cell[4 * i]) continue;
+    const p = project(i); const d = Math.hypot(p.x - clientX, p.y - clientY);
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+let downAt = null;
+canvas.addEventListener('pointermove', (e) => { const idx = pick(e.clientX, e.clientY); if (idx !== state.hover) { dispatch({ type: 'hover', idx }); refreshInspector(); } });
+canvas.addEventListener('pointerdown', (e) => { downAt = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+canvas.addEventListener('pointerup', (e) => {
+  if (!downAt || performance.now() - downAt.t > 300 || Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 6) return;
+  dispatch({ type: 'pin', idx: pick(e.clientX, e.clientY) });
+});
+function refreshInspector() {
+  const idx = state.pinned ?? state.hover;
+  if (idx === null || idx === undefined) return hud.setInspector(null, null);
+  hud.setInspector(makeMockCellDetail(shownFrame, idx), project(idx));
+}
+
+// ── ticker (≈ 4 Hz): the mock organism advances by speed × 0.25 s ──
+setInterval(() => {
+  if (!state.running || state.viewing || !state.ready) return;
+  const tps = SPEEDS[state.speedIndex] || 240;
+  liveFrame = makeMockFrame({ prev: liveFrame, tick: liveFrame.tick + Math.max(1, Math.round(tps / 4)) });
+  shownFrame = liveFrame;
+  publish();
+}, 250);
+addEventListener('resize', () => { draw(); refreshInspector(); });
+
+// ── initial state from URL params ──
+publish();
+if (q.has('viewing')) {
+  const key = q.get('viewing');
+  const snap = key === 'kf' ? state.snapshots.find((x) => x.kind === 'keyframe') : state.snapshots.find((x) => x.key === key);
+  if (snap) view(snap.snapId);
+}
+for (const k of ['pin', 'hover']) if (q.has(k)) {
+  let idx = q.get(k) === 'auto' ? null : num(k, null);
+  if (idx === null) { // a neural cell near the anterior, or any live cell
+    const f = shownFrame; for (let j = 0; j < f.idxCount; j++) { const i = f.idx[j]; if (f.cell[4 * i] === 5) { idx = i; break; } }
+  }
+  state = { ...state, [k === 'pin' ? 'pinned' : 'hover']: idx };
+  hud.render(state); refreshInspector();
+}
+if (q.has('progress')) { const p = num('progress', 0.4); hud.setProgress({ tick: Math.round(5000 * p), target: 5000 }); }
+if (q.has('hint')) hud.setHint(q.get('hint') || 'drag to orbit · scroll to zoom · hover a cell · ? for help', 60000);
+if (q.has('fallback')) hud.showFallback(q.get('fallback') || 'no WebGL 2');
+if (q.has('error')) setState({ error: q.get('error') || 'worker: RangeError: offset is out of bounds' });
+if (!state.ready) { stats = null; hud.render(state); }
+
+// ── dev panel ──
+if (q.get('panel') !== '0') {
+  const panel = document.createElement('details');
+  panel.id = 'dev';
+  panel.innerHTML = '<summary>dev ▾</summary><div class="grid"></div>';
+  const grid = panel.querySelector('.grid');
+  const add = (label, fn, wide) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; if (wide) b.className = 'wide'; grid.append(b); };
+  add('run/pause', () => dispatch({ type: 'toggleRun' }));
+  add('view gut', () => dispatch({ type: 'milestone', key: 'endoCore' }));
+  add('pin cell', () => { const f = shownFrame; dispatch({ type: 'pin', idx: f.idx[Math.floor(f.idxCount / 3)] }); });
+  add('help', () => dispatch({ type: 'toggleHelp' }));
+  add('progress', () => { let p = 0; const t = setInterval(() => { p += 0.05; hud.setProgress(p >= 1 ? null : { tick: Math.round(5000 * p), target: 5000 }); if (p >= 1) clearInterval(t); }, 150); });
+  add('hint', () => hud.setHint('drag to orbit · scroll to zoom · hover a cell · ? for help'));
+  add('fallback', () => hud.showFallback('no WebGL 2'));
+  add('error', () => setState({ error: 'worker: RangeError: offset is out of bounds' }));
+  add('lost energy', () => { q.set('lost', '1.8'); publish(); });
+  add('not ready', () => setState({ ready: false }));
+  add('T0 (reset)', () => dispatch({ type: 'reset' }), true);
+  add('T 20,000 · 6,899 cells', () => { liveFrame = shownFrame = makeFrame(6899, 20000); thumbs.clear(); setState({ viewing: null }); publish(); }, true);
+  for (const v of VIEWS) add(`${v.key} ${v.label}`, () => dispatch({ type: 'view', id: v.id }));
+  document.body.append(panel);
+}
+</script>
+</body>
+</html>

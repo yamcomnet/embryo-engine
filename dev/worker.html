@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Worker harness</title>
+<link rel="icon" href="data:,">
+<meta name="description" content="Embryo Engine dev harness: drives src/sim-worker.js without the scene or HUD and measures pacing, frames, credits, milestones and snapshot determinism.">
+<style>
+  :root { --bg: #0a0b0a; --ink: #e9e5da; --mute: #8f8a80; --hair: #ffffff1f; --ok: #6fd39a; --bad: #ff7a6b; --warn: #f2c14e; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); }
+  body { font: 13px/1.5 ui-monospace, 'JetBrains Mono', Menlo, monospace; padding: 16px; max-width: 1100px; }
+  h1 { font: 600 15px/1.2 system-ui, sans-serif; margin: 0 0 4px; letter-spacing: .02em; }
+  .sub { color: var(--mute); margin: 0 0 16px; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0 18px; }
+  th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--hair); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--mute); font-weight: 500; }
+  #checks td:last-child { white-space: normal; text-align: left; word-break: break-word; color: var(--mute); }
+  #checks td:nth-child(2) { width: 3.5em; }
+  h2 { font: 600 11px/1.2 system-ui, sans-serif; letter-spacing: .14em; text-transform: uppercase; color: var(--mute); margin: 18px 0 4px; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  #status { color: var(--warn); }
+  #thumbs { display: flex; flex-wrap: wrap; gap: 10px; }
+  figure { margin: 0; text-align: center; color: var(--mute); font-size: 11px; }
+  figure canvas { width: 96px; height: 96px; image-rendering: pixelated; border: 1px solid var(--hair); display: block; margin-bottom: 4px; }
+  pre { color: var(--mute); white-space: pre-wrap; font-size: 12px; }
+  @media (max-width: 700px) { body { padding: 12px; } table { font-size: 11px; } th, td { padding: 3px 4px; } }
+</style>
+</head>
+<body>
+<h1>sim-worker harness</h1>
+<p class="sub">Query: <code>?engine=v1|v09|mock&amp;seed=1&amp;at=5000&amp;dur=2500&amp;long=20000</code> (long=0 skips the 20K milestone run). Results: <code>window.__report</code>, <code>window.__done</code>.</p>
+<p id="status">starting…</p>
+<h2>Pacing at T<span id="atT"></span></h2>
+<table id="speeds"><thead><tr><th>target t/s</th><th>actual t/s</th><th>stats.tps.actual</th><th>error</th><th>frames/s</th><th>max in flight</th><th>events/frame</th><th>dropped</th><th>main ms/frame (mean · p95)</th></tr></thead><tbody></tbody></table>
+<h2>Checks</h2>
+<table id="checks"><thead><tr><th>check</th><th>result</th><th>detail</th></tr></thead><tbody></tbody></table>
+<h2>Milestones</h2>
+<div id="thumbs"></div>
+<h2>Log</h2>
+<pre id="log"></pre>
+
+<script type="module">
+import { MSG, N, EV_WORDS, MILESTONES, TISSUE_HEX, SPEEDS } from '../src/shared.js';
+
+const q = new URLSearchParams(location.search);
+const ENGINE = q.get('engine') || 'v1';
+const SEED = +(q.get('seed') || 1);
+const AT = +(q.get('at') || 5000);
+const DUR = +(q.get('dur') || 2500);
+const LONG = +(q.get('long') ?? 20000);
+document.getElementById('atT').textContent = AT.toLocaleString('en-US');
+
+const $ = (id) => document.getElementById(id);
+const log = (...a) => { const s = a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' '); $('log').textContent += s + '\n'; console.log('[harness]', s); };
+const status = (s) => { $('status').textContent = s; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const row = (tbody, cells, cls = []) => { const tr = document.createElement('tr'); cells.forEach((c, i) => { const td = document.createElement('td'); td.textContent = c; if (cls[i]) td.className = cls[i]; tr.append(td); }); $(tbody).querySelector('tbody').append(tr); };
+const report = { engine: ENGINE, seed: SEED, at: AT, speeds: [], checks: {}, milestones: [], errors: [] };
+window.__report = report; window.__done = false;
+const check = (name, pass, detail) => { report.checks[name] = { pass, detail }; row('checks', [name, pass ? 'pass' : 'FAIL', typeof detail === 'string' ? detail : JSON.stringify(detail)], ['', pass ? 'ok' : 'bad', '']); };
+
+// Emulated stage: its own copies of the textures (the real stage.setFrame copies with TypedArray.set).
+const local = { cell: new Uint8Array(4 * N), life: new Uint8Array(4 * N), idx: new Uint16Array(N), morph: new Float32Array(4 * N), events: new Int32Array(EV_WORDS * 4096) };
+const worker = new Worker(new URL('../src/sim-worker.js', import.meta.url), { type: 'module' });
+let last = null, frames = 0, acks = 0, maxInFlight = 0, seq = 0, snaps = [];
+const mainMs = [];
+const waiters = new Set();
+const ackMsg = { type: MSG.ACK, id: 0, buffers: {} };
+
+worker.onmessage = (e) => {
+  const m = e.data;
+  if (m.type === MSG.FRAME) {
+    const t0 = performance.now();
+    frames++;
+    maxInFlight = Math.max(maxInFlight, m.id - acks);
+    local.cell.set(m.cell); local.life.set(m.life); local.idx.set(m.idx);
+    if (m.morph) local.morph.set(m.morph);
+    local.events.set(m.events);
+    last = m;
+    const b = ackMsg.buffers;
+    b.cell = m.cell; b.life = m.life; b.idx = m.idx; b.events = m.events; b.morph = m.morph || undefined;
+    ackMsg.id = m.id;
+    const list = [m.cell.buffer, m.life.buffer, m.idx.buffer, m.events.buffer];
+    if (m.morph) list.push(m.morph.buffer);
+    worker.postMessage(ackMsg, list);
+    acks++;
+    mainMs.push(performance.now() - t0);
+  } else if (m.type === MSG.MILESTONE) {
+    report.milestones.push({ key: m.key, tick: m.tick, snapId: m.snapId });
+    const fig = document.createElement('figure');
+    const c = document.createElement('canvas'); c.width = m.thumb.w; c.height = m.thumb.h;
+    const ctx = c.getContext('2d'), img = ctx.createImageData(c.width, c.height);
+    const pal = TISSUE_HEX.map((h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16)));
+    m.thumb.types.forEach((t, i) => { if (t) { img.data.set(pal[t], 4 * i); img.data[4 * i + 3] = 255; } });
+    ctx.putImageData(img, 0, 0);
+    fig.append(c, `${m.key} · T${m.tick}`);
+    $('thumbs').append(fig);
+    log(`milestone ${m.key} at T${m.tick} (snap #${m.snapId})`);
+  } else if (m.type === MSG.SNAPSHOTS) snaps = m.list;
+  else if (m.type === MSG.ERROR) { report.errors.push(m.message); log('ERROR', m.message, m.stack); }
+  for (const w of [...waiters]) if (w.pred(m)) { waiters.delete(w); w.res(m); }
+};
+worker.onerror = (e) => { report.errors.push(String(e.message)); log('worker error', e.message); };
+
+const waitFor = (pred, ms = 120000) => new Promise((res, rej) => {
+  const w = { pred, res };
+  waiters.add(w);
+  setTimeout(() => { if (waiters.delete(w)) rej(new Error('timeout waiting')); }, ms);
+});
+const ctl = (m) => { m.seq = ++seq; worker.postMessage(m); return seq; };
+const hash = async () => { worker.postMessage({ type: 'hash' }); return (await waitFor((m) => m.type === 'hash')).hash; };
+const frameAfter = (s, extra = () => true) => waitFor((m) => m.type === MSG.FRAME && m.ctl === s && extra(m));
+const stat = (a) => { const s = [...a].sort((x, y) => x - y); return { mean: a.reduce((p, v) => p + v, 0) / Math.max(1, a.length), p95: s[Math.floor(0.95 * (s.length - 1))] || 0 }; };
+
+// Stats schema (ADDENDUM §B.2): every key present with the right type.
+const NUM = 'n', ARR = (len) => ({ arr: len });
+const SCHEMA = {
+  tick: NUM, seed: NUM, seedCount: NUM, cellCount: NUM, typeCounts: ARR(8),
+  energy: { total: NUM, initial: NUM, driftPpm: NUM, lost: NUM, mean: NUM, meanStem: NUM, meanDiff: NUM, thrStem: NUM, thrDiff: NUM, ready: NUM, readyStem: NUM, readyDiff: NUM, readyRoom: NUM, histStem: ARR(24), histDiff: ARR(24) },
+  totals: { births: NUM, deaths: NUM, fates: NUM },
+  win: { W: NUM, births: NUM, deaths: NUM, fates: NUM, recycled: NUM, deathsByCause: ARR(4), fatesTo: ARR(8), reSpecified: NUM, stemFates: NUM, rimBirthPct: NUM },
+  geom: { cx: NUM, cy: NUM, rMax: NUM, dmax: NUM, bands: { e1: NUM, e2: NUM, e3: NUM }, gaps: NUM, neural: { count: NUM, cx: NUM, cy: NUM, spread: NUM, anteriorPct: NUM } },
+  signals: { maxAct: NUM, maxInh: NUM, maxMid: NUM, maxAP: NUM, meanAct: NUM, maxMesoAct: NUM, neuralCompetent: NUM, muscleClustering: NUM },
+  bands: { counts: ARR(5), matchPct: NUM, stemCore: NUM },
+  age: { old: NUM },
+  plates: { fate: ARR(4) },
+  stage: { key: 's', label: 's', index: NUM },
+  milestoneStats: 'obj',
+  tps: { target: NUM, actual: NUM },
+  foundersAlive: NUM,
+};
+function schemaErrors(v, sc, path = 'stats', out = []) {
+  if (sc === NUM) { if (typeof v !== 'number' || !Number.isFinite(v)) out.push(`${path}: ${v}`); }
+  else if (sc === 's') { if (typeof v !== 'string') out.push(`${path}: not a string`); }
+  else if (sc === 'obj') { if (!v || typeof v !== 'object') out.push(`${path}: not an object`); }
+  else if (sc.arr) { if (!Array.isArray(v) || v.length !== sc.arr || v.some((x) => typeof x !== 'number' || !Number.isFinite(x))) out.push(`${path}: bad array`); }
+  else { if (!v || typeof v !== 'object') { out.push(`${path}: missing`); return out; } for (const k of Object.keys(sc)) schemaErrors(v[k], sc[k], `${path}.${k}`, out); }
+  return out;
+}
+
+async function run() {
+  try {
+    status(`init ${ENGINE}…`);
+    worker.postMessage({ type: MSG.INIT, seed: SEED, speedIndex: 3, running: false, snapshotCap: 16, fieldsHz: 15, engine: ENGINE });
+    const ready = await waitFor((m) => m.type === MSG.READY);
+    const first = await waitFor((m) => m.type === MSG.FRAME);
+    report.ready = { engineVersion: ready.engineVersion, seedCount: ready.seedCount };
+    log(`ready: engine ${ready.engineVersion}, ${ready.seedCount} seeds`);
+    const t0Want = ENGINE === 'mock' ? first.tick : 0;   // the mock starts at its own T5000 organism
+    check('first frame is T0, paused, cut', first.tick === t0Want && first.prevTick === first.tick && !first.running && (ENGINE === 'mock' || first.idxCount === ready.seedCount), { tick: first.tick, prevTick: first.prevTick, idxCount: first.idxCount });
+    const se = schemaErrors(first.stats, SCHEMA);
+    check('stats schema (§B.2) at T0', se.length === 0, se.slice(0, 5).join('; ') || 'all keys present, finite');
+
+    // fast-forward throughput (no frames published during the jump)
+    status(`fast-forward to T${AT}…`);
+    const fp = [];
+    const pw = (m) => { if (m.type === MSG.PROGRESS) fp.push(m); return false; };
+    waiters.add({ pred: pw, res: () => {} });
+    const f0 = frames, t0 = performance.now();
+    let s = ctl({ type: MSG.FAST_FORWARD, tick: AT });
+    const ff = await frameAfter(s, (m) => m.tick >= AT);
+    const ffMs = performance.now() - t0;
+    report.fastForward = { ms: Math.round(ffMs), ticksPerSec: Math.round(AT / (ffMs / 1000)), progressMsgs: fp.length, framesDuring: frames - f0 - 1 };
+    check('fast-forward: progress, no frames, cut frame', fp.length > 0 && fp.at(-1).done && frames - f0 === 1 && ff.prevTick === ff.tick, report.fastForward);
+    const se2 = schemaErrors(ff.stats, SCHEMA);
+    check(`stats schema (§B.2) at T${AT}`, se2.length === 0, se2.slice(0, 5).join('; ') || `all keys present, finite · ${ff.stats.cellCount} cells`);
+
+    // pacing sweep
+    for (const tps of [7.5, 60, 120, 240, 480, 0]) {
+      status(`pacing at ${tps || 'MAX'} t/s…`);
+      ctl({ type: MSG.SPEED, tps });
+      s = ctl({ type: MSG.RUN });
+      await frameAfter(s);
+      await sleep(500);
+      const k0 = last.tick, fr0 = frames, ms0 = mainMs.length, a = performance.now();
+      maxInFlight = 0;
+      let evs = 0, drop = 0, n = 0;
+      const ew = (m) => { if (m.type === MSG.FRAME) { evs += m.eventCount; drop += m.eventsDropped; n++; } return false; };
+      waiters.add({ pred: ew, res: () => {} });
+      await sleep(DUR);
+      const dt = (performance.now() - a) / 1000;
+      const actual = (last.tick - k0) / dt;
+      const mm = stat(mainMs.slice(ms0));
+      const err = tps ? (100 * (actual - tps)) / tps : 0;
+      const r = { target: tps || 'MAX', actual: +actual.toFixed(1), statsActual: last.stats.tps.actual, errPct: +err.toFixed(2), fps: +((frames - fr0) / dt).toFixed(1), maxInFlight, evPerFrame: n ? Math.round(evs / n) : 0, dropped: drop, mainMs: +mm.mean.toFixed(3), mainP95: +mm.p95.toFixed(3) };
+      report.speeds.push(r);
+      row('speeds', [r.target, r.actual, r.statsActual, tps ? `${r.errPct}%` : '—', r.fps, r.maxInFlight, r.evPerFrame, r.dropped, `${r.mainMs} · ${r.mainP95}`], ['', '', '', tps && Math.abs(err) > 5 ? 'bad' : 'ok', '', r.maxInFlight > 2 ? 'bad' : '', '', r.dropped ? 'warn' : '', r.mainP95 > 2 ? 'warn' : '']);
+    }
+    const pacingOk = report.speeds.filter((r) => r.target !== 'MAX').every((r) => Math.abs(r.errPct) <= 5);
+    check('actual t/s within 5% of target (7.5…480)', pacingOk, report.speeds.map((r) => `${r.target}:${r.actual}`).join(' '));
+    const maxR = report.speeds.at(-1);
+    check('MAX reports the actual rate', maxR.statsActual > 0 && Math.abs(maxR.statsActual - maxR.actual) / maxR.actual < 0.25, `measured ${maxR.actual} · stats ${maxR.statsActual}`);
+    check('≤ 1 frame in flight at 60 Hz', report.speeds.every((r) => r.maxInFlight <= 2) && report.speeds[1].maxInFlight <= 1, report.speeds.map((r) => r.maxInFlight).join(' '));
+
+    // run / pause / step / speed semantics
+    status('control semantics…');
+    s = ctl({ type: MSG.SPEED, tps: 60 });
+    s = ctl({ type: MSG.PAUSE });
+    const fp1 = await frameAfter(s);
+    await sleep(300);
+    const stillTick = last.tick;
+    check('pause stops ticking and publishes running=false', !fp1.running && stillTick === fp1.tick, { tick: fp1.tick, after300ms: stillTick });
+    s = ctl({ type: MSG.RUN });
+    await frameAfter(s, (m) => m.running);
+    await sleep(200);
+    s = ctl({ type: MSG.STEP, n: 1 });
+    const fs1 = await frameAfter(s);
+    await sleep(250);
+    check('step pauses first, then steps 1 tick', !fs1.running && last.tick === fs1.tick, { tick: fs1.tick, prevTick: fs1.prevTick, events: fs1.eventCount });
+    s = ctl({ type: MSG.STEP, n: 10 });
+    const fs10 = await frameAfter(s);
+    check('step n=10 advances exactly 10', fs10.tick === fs1.tick + 10 && fs10.prevTick === fs1.tick, { from: fs1.tick, to: fs10.tick });
+
+    // inspect
+    let liveIdx = -1;   // first live instance (the list also holds death ghosts)
+    for (let k = 0; k < N && liveIdx < 0; k++) if (local.cell[4 * local.idx[k]] > 0) liveIdx = local.idx[k];
+    worker.postMessage({ type: MSG.INSPECT, reqId: 7, idx: liveIdx });
+    const ir = await waitFor((m) => m.type === MSG.INSPECT_RESULT && m.reqId === 7);
+    worker.postMessage({ type: MSG.INSPECT, reqId: 8, idx: 0 });
+    const ir0 = await waitFor((m) => m.type === MSG.INSPECT_RESULT && m.reqId === 8);
+    check('inspect returns CellDetail (live) and null (empty)', ir.detail && ir.detail.idx === liveIdx && ir.detail.type === local.cell[4 * liveIdx] && ir0.detail === null, ir.detail ? { idx: ir.detail.idx, type: ir.detail.type, depth: ir.detail.depth, band: ir.detail.band } : null);
+
+    if (ENGINE === 'mock') {   // synthetic frames restart at T5000 and do not replay: the determinism checks do not apply
+      check('snapshot / resume / milestone checks', true, 'n/a for the mock engine');
+      throw Object.assign(new Error('mock: skipped the determinism sections'), { skip: true });
+    }
+    // snapshot round trip: uninterrupted T3500 vs resume from the T3000 keyframe
+    status('snapshot round trip…');
+    s = ctl({ type: MSG.RESET, seed: SEED });
+    const fr = await frameAfter(s);
+    check('reset: T0 frame, snapshots cleared', fr.tick === 0 && fr.prevTick === 0, { tick: fr.tick, snapshots: snaps.length });
+    s = ctl({ type: MSG.FAST_FORWARD, tick: 3500 });
+    await frameAfter(s, (m) => m.tick === 3500);
+    const hA = await hash();
+    const kf = snaps.find((x) => x.tick === 3000);
+    s = ctl({ type: MSG.VIEW_SNAPSHOT, snapId: kf.snapId });
+    const fv = await frameAfter(s);
+    const hView = await hash();
+    worker.postMessage({ type: MSG.INSPECT, reqId: 9, idx: local.idx[0] });
+    const irv = await waitFor((m) => m.type === MSG.INSPECT_RESULT && m.reqId === 9);
+    check('viewSnapshot shows T3000 (paused, no events)', fv.tick === 3000 && fv.viewing && fv.viewing.snapId === kf.snapId && !fv.running && fv.eventCount === 0 && fv.prevTick === 3000 && irv.detail && irv.detail.tick === 3000, { tick: fv.tick, viewing: fv.viewing, inspectTick: irv.detail && irv.detail.tick });
+    s = ctl({ type: MSG.LIVE });
+    const fl = await frameAfter(s);
+    const hLive = await hash();
+    check('live returns to the same live state', fl.tick === 3500 && !fl.viewing && hLive === hA, { tick: fl.tick, hash: hLive });
+    s = ctl({ type: MSG.VIEW_SNAPSHOT, snapId: kf.snapId });
+    await frameAfter(s);
+    ctl({ type: MSG.RESUME });
+    s = ctl({ type: MSG.PAUSE });
+    const frs = await frameAfter(s);
+    const listAfter = snaps.map((x) => x.tick);
+    s = ctl({ type: MSG.FAST_FORWARD, tick: 3500 });
+    await frameAfter(s, (m) => m.tick === 3500);
+    const hB = await hash();
+    report.roundTrip = { hA, hB, hView, resumedAt: frs.tick, snapshotsAfterResume: listAfter };
+    check('resume: hash at T3500 equals the uninterrupted run', hA === hB, `${hA} vs ${hB} (resumed at T3000, paused at T${frs.tick})`);
+    check('resume drops later snapshots, keeps earlier', listAfter.every((t) => t <= Math.max(3000, frs.tick)) && listAfter.includes(3000), listAfter.join(' '));
+
+    // long run: all milestones once, with thumbs and snapshots; thinning under the cap
+    if (LONG > 0) {
+      status(`milestones over ${LONG} ticks…`);
+      report.milestones = [];
+      $('thumbs').textContent = '';
+      s = ctl({ type: MSG.RESET, seed: SEED });
+      await frameAfter(s);
+      const a = performance.now();
+      s = ctl({ type: MSG.FAST_FORWARD, tick: LONG });
+      const fL = await frameAfter(s, (m) => m.tick === LONG);
+      report.long = { ms: Math.round(performance.now() - a), stats: fL.stats };
+      const keys = report.milestones.map((m) => m.key);
+      const dup = keys.filter((k, i) => keys.indexOf(k) !== i);
+      const missing = MILESTONES.map((m) => m.key).filter((k) => !keys.includes(k));
+      check(`milestones over ${LONG} ticks fire once each`, dup.length === 0, `${report.milestones.map((m) => `${m.key}@${m.tick}`).join(' ')}${missing.length ? ` · awaiting: ${missing.join(', ')}` : ''}`);
+      check('snapshots: every milestone kept, keyframes thinned, cap 16', snaps.length <= 16 && report.milestones.every((m) => snaps.some((x) => x.snapId === m.snapId)), snaps.map((x) => `${x.kind[0]}${x.tick}`).join(' '));
+      check('energy conserved (lost 0, |drift| < 1 ppm)', fL.stats.energy.lost === 0 && Math.abs(fL.stats.energy.driftPpm) < 1, { total: fL.stats.energy.total, driftPpm: fL.stats.energy.driftPpm, lost: fL.stats.energy.lost });
+    }
+    worker.postMessage({ type: 'perf' });
+    report.perf = await waitFor((m) => m.type === 'perf');
+    check('incremental counts never needed a resync', report.perf.resyncs === 0, { resyncs: report.perf.resyncs, poolAllocs: report.perf.poolAllocs, workerTickMs: +report.perf.tickMs.toFixed(3), workerPackMs: +report.perf.packMs.toFixed(3) });
+    check('no worker errors', report.errors.length === 0, report.errors.join('; ') || 'none');
+    status(`done · ${Object.values(report.checks).filter((c) => c.pass).length}/${Object.keys(report.checks).length} checks pass`);
+  } catch (err) {
+    if (err && err.skip) { status(`done (mock) · ${Object.values(report.checks).filter((c) => c.pass).length}/${Object.keys(report.checks).length} checks pass`); window.__done = true; return; }
+    report.errors.push(String(err && err.stack || err));
+    status(`harness error: ${err.message}`);
+    log('harness error', String(err && err.stack || err));
+  }
+  window.__done = true;
+  console.log('[harness] REPORT ' + JSON.stringify({ ...report, long: report.long ? { ms: report.long.ms } : undefined }));
+}
+run();
+</script>
+</body>
+</html>
