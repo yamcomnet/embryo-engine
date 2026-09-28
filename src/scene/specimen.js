@@ -385,7 +385,7 @@ export function createSpecimen(renderer, { cellTextures, displayUniforms, cellUn
     },
 
     /** The dish glass's reflection (its glint of the illuminator ring), 0..1: the stage holds it down while the camera
-     *  tilts fast. */
+     *  glides between poses or tilts fast. */
     setGlassGlint(a) { dishMat.envMapIntensity = DISH_ENV * a; },
 
     /** Objective fades out when the camera looks steeply down or in Apart (it would cut through the stack). */

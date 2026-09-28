@@ -20,6 +20,7 @@ const EMA_SETTLE_MS = 900;
 const MAX_DIST = 900, MAX_DIST_MAP = 1600;    // OrbitControls' zoom-out cap (the map preset: camera.js's own clamp)
 const GRID_ALL_R = 300;                // scale-grid fade radius that covers the whole dish from any organism centre
 const TILT_GLINT = 25 * DEG;           // camera tilt rate (rad/s) at which the dish glass's reflection is halved
+const GLIDE_DIM_IN = 0.12, GLIDE_DIM_OUT = 0.5;   // s: the glass's reflection fades out as a glide starts, back after it
 const FAMILY_TYPE = [TYPE.ECTO, TYPE.MESO, TYPE.ENDO, TYPE.STEM];
 // Narrow screens (phones) have no room beside the Apart stack for the full family names: the stack is framed to
 // leave a column for the callouts (applyHudRegion).
@@ -118,6 +119,7 @@ export async function createStage(canvas, {
     lastTick: -1, viewing: false, dirty: true, busyUntil: 0, animating: false, renders: 0, shadowDirty: true,
     focusDist: 0, cpuMs: 0, anchorAz: 1e9, lastRenderT: 0, width: 1, height: 1, domeD: 0, domeTarget: 1, turntable: false,
     tiltEl: NaN, tilt: 0,             // the camera's elevation last render, and its eased tilt rate (rad/s)
+    glide: 0,                         // how far the glass's reflection is held down for a camera glide (0..1, eased)
     clock: { visRel: 0, tauBirth: 1, tauDeath: 1, tauFate: 1 },
   };
   const times = new Float64Array(240);
@@ -816,18 +818,24 @@ export async function createStage(canvas, {
       v3.set(gx - v3c.x * 100, 10, gz - v3c.z * 100).project(camera);
       spec.update(camera, bufSize.y, v3.x * 0.5 + 0.5, MathUtils.clamp(v3.y * 0.5 + 0.5, -0.5, 1.5));
       const el = rig.elevation();
-      // The dish wall mirrors the illuminator ring in a narrow band of camera elevations (about 25–38° on the way to
-      // the map), and the dish is round, so the whole far wall lights up at once. A glide into or out of the map tilts
-      // through that band in about 0.15 s, and the frame pulsed by up to 13%. A glint moving that fast would smear
-      // across a real camera's frame, so the glass's reflection is scaled by 1 / (1 + (tilt rate / TILT_GLINT)²): at
-      // rest, under the turntable (which only turns the round dish) and in slow orbits it is unchanged.
+      // The dish wall mirrors the illuminator ring in narrow bands of camera pose, and the dish is round, so the whole
+      // wall lights up at once: a glide through such a band (a few degrees of elevation, or the dolly between two
+      // presets) pulsed the frame by 10–40%, and on a large organism the Close pose sits right at the edge of one, so
+      // the pulse came in the glide's first 0.15 s, while it was still slow. A glint swept that fast would smear across
+      // a real camera's frame, so the glass's reflection is held down for the whole of every eased glide (preset, frame,
+      // Apart), from its first frame: gone within GLIDE_DIM_IN, back over GLIDE_DIM_OUT once the camera has arrived.
+      // User orbits scale it by 1 / (1 + (tilt rate / TILT_GLINT)²). At rest and under the turntable (which only
+      // turns the round dish) it is unchanged. Cuts (reduced motion) sweep nothing and keep it.
       const dEl = Math.abs(el - st.tiltEl);
       st.tiltEl = el;
       const tiltRate = !st.reduced && dt > 0 && dEl < 30 * DEG ? dEl / dt : 0;   // a cut sweeps nothing
       st.tilt += (tiltRate - st.tilt) * (1 - Math.exp(-dt / (tiltRate > st.tilt ? 0.03 : 0.15)));
       if (st.tilt < 0.01) st.tilt = 0;                                      // the glass is back to 99.95 %
-      const glintMoving = st.tilt > 0;
-      spec.setGlassGlint(1 / (1 + (st.tilt / TILT_GLINT) ** 2));
+      if (rig.gliding && !st.reduced) st.glide = Math.min(1, st.glide + dt / GLIDE_DIM_IN);
+      else if (st.glide > 0) st.glide = st.reduced ? 0 : Math.max(0, st.glide - dt / GLIDE_DIM_OUT);
+      const glintMoving = st.tilt > 0 || st.glide > 0;
+      const held = st.glide * st.glide * (3 - 2 * st.glide);
+      spec.setGlassGlint((1 - held) / (1 + (st.tilt / TILT_GLINT) ** 2));
       // the objective is only ever seen melted by the depth of field: without DOF (Low) it stays out of the picture
       spec.setObjectiveFade(tier.dof ? (1 - MathUtils.smoothstep(el, 55 * DEG, 64 * DEG)) * (1 - plateA) : 0);
       spec.lip.visible = !!tier.dof;                 // the lit lip is drawn to be melted into a soft arc, likewise

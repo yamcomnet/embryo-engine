@@ -188,6 +188,9 @@ export function createRig(camera, controls, { reducedMotion = false } = {}) {
     get fovMap() { return preset === 'map'; },
     /** True while the turntable is actually turning (it eases in and out). */
     get turning() { return Math.abs(turn.w) > 1e-4; },
+    /** True while an eased glide is under way (a preset, frame, Apart or auto-framing switch, or a keyboard nudge's
+     *  first move); false under reduced motion, where these are cuts. */
+    get gliding() { return tween !== null; },
 
     setAspect(a) { aspect = a; },
     setRegion(fx, fy, plateFit = false) { regionX = MathUtils.clamp(fx, 0.3, 1); regionY = MathUtils.clamp(fy, 0.3, 1); fitPlates = !!plateFit; },
