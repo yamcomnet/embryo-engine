@@ -4,8 +4,8 @@
 // Folding the DOF composite, the bloom blend, the grade and the output transform into one pass saves three
 // full-resolution passes (≈0.65 ms each at DPR 2 on an M2 Pro); that budget pays for the stronger depth of field.
 import {
-  DepthTexture, HalfFloatType, LinearFilter, ShaderMaterial, UnsignedByteType, UnsignedIntType, Vector2, Vector4,
-  WebGLRenderTarget, Matrix4,
+  DepthTexture, HalfFloatType, LinearFilter, MathUtils, ShaderMaterial, UnsignedByteType, UnsignedIntType, Vector2,
+  Vector4, WebGLRenderTarget, Matrix4,
 } from 'three';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -13,6 +13,8 @@ import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import * as S from './shaders.js';
 
 const BLOOM = { strength: 0.8, radius: 0.32, threshold: 1.0 };
+const DOF_K = 90;                      // circle-of-confusion gain (px per unit of defocus at 1080 px)
+const VIG_MAP = 0.12;                  // the map preset's lighter vignette
 
 /** UnrealBloomPass's mip chain without its final full-resolution blend: the Final pass adds the result. */
 class BloomChain extends UnrealBloomPass {
@@ -61,7 +63,7 @@ export function createPost(renderer, scene, camera, tier) {
 
   const U = {
     uProjInv: { value: new Matrix4() }, uCamWorld: { value: new Matrix4() }, uFocus: { value: 300 },
-    uRange: { value: 100 }, uTopY: { value: 20 }, uK: { value: 90 }, uMaxCoc: { value: 12 }, uResY: { value: 1080 },
+    uRange: { value: 100 }, uTopY: { value: 20 }, uK: { value: DOF_K }, uMaxCoc: { value: 12 }, uResY: { value: 1080 },
   };
   const mat = (frag, extra) => new ShaderMaterial({
     vertexShader: S.PASS_VERT, fragmentShader: frag, depthTest: false, depthWrite: false, uniforms: { ...U, ...extra },
@@ -115,17 +117,23 @@ export function createPost(renderer, scene, camera, tier) {
     },
     setTier: applyTier,
 
-    /** Per-frame focus: distance to the focus point, in-focus half range, top of the specimen (world y). */
-    setFocus(cam, focusDist, range, topY, mapMode) {
+    /** Per-frame focus: distance to the focus point, in-focus half range, top of the specimen (world y), and how far
+     *  the map preset has taken over (0 = the specimen's lens, 1 = the map's: no depth of field, no bloom, a lighter
+     *  vignette). In between, the defocus, the bloom and the vignette all ease together and monotonically: switched
+     *  off at the midpoint, they lifted the whole frame in one step while the camera was still low over the dish. */
+    setFocus(cam, focusDist, range, topY, mapMix) {
+      const lens = 1 - MathUtils.clamp(mapMix, 0, 1);
       U.uProjInv.value.copy(cam.projectionMatrixInverse);
       U.uCamWorld.value.copy(cam.matrixWorld);
       U.uFocus.value = focusDist;
       U.uRange.value = range;
       U.uTopY.value = topY;
-      U.uMaxCoc.value = cur.dof ? cur.dof.maxCoc * (U.uResY.value / 1080) : 0;
-      state.dofActive = state.dofOn && !!cur.dof && !mapMode;
-      state.bloomOn = !mapMode;
-      finalMat.uniforms.uVig.value = mapMode ? 0.12 : state.vignette;
+      U.uK.value = DOF_K * lens;
+      U.uMaxCoc.value = cur.dof ? cur.dof.maxCoc * (U.uResY.value / 1080) * lens : 0;
+      state.dofActive = state.dofOn && !!cur.dof && lens > 0;
+      state.bloomOn = lens > 0;
+      bloom.strength = BLOOM.strength * lens;
+      finalMat.uniforms.uVig.value = MathUtils.lerp(VIG_MAP, state.vignette, lens);
       dofUniform.value.set(focusDist, range, U.uK.value * (U.uResY.value / 1080), state.dofActive ? U.uMaxCoc.value : 0);
     },
     setDofEnabled(on) { state.dofOn = !!on; },

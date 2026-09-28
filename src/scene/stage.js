@@ -18,6 +18,8 @@ const EXPLODE_MAX = 1.49;              // stagger clock end: 1 + max delay (0.25
 const EXPLODE_RATE = 1 / 1.2;          // per second (each cell's own flight takes 1.2 s)
 const EMA_SETTLE_MS = 900;
 const MAX_DIST = 900, MAX_DIST_MAP = 1600;    // OrbitControls' zoom-out cap (the map preset: camera.js's own clamp)
+const GRID_ALL_R = 300;                // scale-grid fade radius that covers the whole dish from any organism centre
+const TILT_GLINT = 25 * DEG;           // camera tilt rate (rad/s) at which the dish glass's reflection is halved
 const FAMILY_TYPE = [TYPE.ECTO, TYPE.MESO, TYPE.ENDO, TYPE.STEM];
 // Narrow screens (phones) have no room beside the Apart stack for the full family names: the stack is framed to
 // leave a column for the callouts (applyHudRegion).
@@ -115,6 +117,7 @@ export async function createStage(canvas, {
     cx: 100, cy: 100, rMax: 4, dmax: 1, hMax: hOf(1), plateR: 12,
     lastTick: -1, viewing: false, dirty: true, busyUntil: 0, animating: false, renders: 0, shadowDirty: true,
     focusDist: 0, cpuMs: 0, anchorAz: 1e9, lastRenderT: 0, width: 1, height: 1, domeD: 0, domeTarget: 1, turntable: false,
+    tiltEl: NaN, tilt: 0,             // the camera's elevation last render, and its eased tilt rate (rad/s)
     clock: { visRel: 0, tauBirth: 1, tauDeath: 1, tauFate: 1 },
   };
   const times = new Float64Array(240);
@@ -742,6 +745,14 @@ export async function createStage(canvas, {
       const tx = MathUtils.clamp(t.x, -110, 110), ty = MathUtils.clamp(t.y, -5, 60), tz = MathUtils.clamp(t.z, -110, 110);
       if (tx !== t.x || ty !== t.y || tz !== t.z) { v3b.set(tx - t.x, ty - t.y, tz - t.z); t.add(v3b); camera.position.add(v3b); }
 
+      // the map mix, before anything reads it (a cut under reduced motion drew one frame of the agar's halo)
+      const flatTarget = rig.preset === 'map' ? 1 : 0;
+      const flatMoving = st.flat !== flatTarget;
+      if (flatMoving) {
+        const step = st.reduced ? 1 : dt / 0.6;
+        st.flat = st.flat < flatTarget ? Math.min(flatTarget, st.flat + step) : Math.max(flatTarget, st.flat - step);
+      }
+
       // Apart flight clock and plates
       const exTarget = st.exploded ? EXPLODE_MAX : 0;
       const exMoving = st.explodeS !== exTarget;
@@ -756,9 +767,10 @@ export async function createStage(canvas, {
       spec.setPlates(plateY, st.plateR, plateA, gx, gz);
       AU.uApart.value = plateA;
       // scale grid: the map and depth views show it across the dish; elsewhere only a faint reticle near the organism
+      // (entering the map, the reticle spreads out from the organism instead of appearing across the dish at once)
       const gridAll = Math.max(st.flat, st.viewIdx === 1 ? 1 : 0);
       AU.uGrid.value = MathUtils.lerp(0.013, 0.03, st.flat);
-      AU.uGridFade.value.set(gx, gz, gridAll > 0.5 ? 1e4 : gr + 3, 0.9 * gr + 12);
+      AU.uGridFade.value.set(gx, gz, MathUtils.lerp(gr + 3, GRID_ALL_R, gridAll), 0.9 * gr + 12);
       AU.uEdgeLine.value = 0.05 * gridAll;
       AU.uHaloAmt.value = 0.17 * (1 - st.flat) * (st.viewIdx === 0 ? 1 : 0.5) * (1 - 0.7 * plateA);
       AU.uBaseTint.value = 0.06 * (1 - 0.85 * plateA);
@@ -773,16 +785,12 @@ export async function createStage(canvas, {
         st.shadowDirty = true;
       }
 
-      // map preset: flat columns, unlit legend colours, no glow
-      const flatTarget = rig.preset === 'map' ? 1 : 0;
-      const flatMoving = st.flat !== flatTarget;
-      if (flatMoving) {
-        const step = st.reduced ? 1 : dt / 0.6;
-        st.flat = st.flat < flatTarget ? Math.min(flatTarget, st.flat + step) : Math.max(flatTarget, st.flat - step);
-      }
+      // map preset: flat columns, unlit legend colours, no glow. Every map term follows st.flat continuously (the
+      // glow, the lens in post.setFocus, the agar's grid and halo above): nothing is switched at the midpoint, where
+      // the glide from a low pose is still close over the dish.
       U.uFlat.value = st.flat;
       U.uUnlit.value = MathUtils.smoothstep(st.flat, 0.4, 1.0);
-      U.uGlowOn.value = st.viewIdx === 0 && st.flat < 0.5 ? 1 : 0;
+      U.uGlowOn.value = st.viewIdx === 0 ? 1 : 0;       // the shader fades the glow with 1 − uFlat
       // lights follow the camera's azimuth (a turntable under fixed studio lights); the key's shadow frustum hugs
       // the organism, or the whole Apart stack
       const az = rig.azimuth();
@@ -808,6 +816,18 @@ export async function createStage(canvas, {
       v3.set(gx - v3c.x * 100, 10, gz - v3c.z * 100).project(camera);
       spec.update(camera, bufSize.y, v3.x * 0.5 + 0.5, MathUtils.clamp(v3.y * 0.5 + 0.5, -0.5, 1.5));
       const el = rig.elevation();
+      // The dish wall mirrors the illuminator ring in a narrow band of camera elevations (about 25–38° on the way to
+      // the map), and the dish is round, so the whole far wall lights up at once. A glide into or out of the map tilts
+      // through that band in about 0.15 s, and the frame pulsed by up to 13%. A glint moving that fast would smear
+      // across a real camera's frame, so the glass's reflection is scaled by 1 / (1 + (tilt rate / TILT_GLINT)²): at
+      // rest, under the turntable (which only turns the round dish) and in slow orbits it is unchanged.
+      const dEl = Math.abs(el - st.tiltEl);
+      st.tiltEl = el;
+      const tiltRate = !st.reduced && dt > 0 && dEl < 30 * DEG ? dEl / dt : 0;   // a cut sweeps nothing
+      st.tilt += (tiltRate - st.tilt) * (1 - Math.exp(-dt / (tiltRate > st.tilt ? 0.03 : 0.15)));
+      if (st.tilt < 0.01) st.tilt = 0;                                      // the glass is back to 99.95 %
+      const glintMoving = st.tilt > 0;
+      spec.setGlassGlint(1 / (1 + (st.tilt / TILT_GLINT) ** 2));
       // the objective is only ever seen melted by the depth of field: without DOF (Low) it stays out of the picture
       spec.setObjectiveFade(tier.dof ? (1 - MathUtils.smoothstep(el, 55 * DEG, 64 * DEG)) * (1 - plateA) : 0);
       spec.lip.visible = !!tier.dof;                 // the lit lip is drawn to be melted into a soft arc, likewise
@@ -836,7 +856,7 @@ export async function createStage(canvas, {
       const reach = flightReach(st.explodeS);
       const range = 1.02 * gr + 3 + reach * (plateY[0] - plateY[3]) * 0.6;
       const topY = MathUtils.lerp(gh + 4, plateY[0] + 6, reach);
-      post.setFocus(camera, st.focusDist, range, topY, st.flat > 0.5);
+      post.setFocus(camera, st.focusDist, range, topY, st.flat);
       post.render(dt);
 
       if (labels) {
@@ -862,7 +882,8 @@ export async function createStage(canvas, {
 
       st.renders++;
       st.dirty = false;
-      st.animating = rigMoving || ctrlMoving || exMoving || geoMoving || flatMoving || focusMoving || offMoving || domeMoving;
+      st.animating = rigMoving || ctrlMoving || exMoving || geoMoving || flatMoving || focusMoving || offMoving || domeMoving
+        || glintMoving;
       st.cpuMs += (performance.now() - t0 - st.cpuMs) * 0.1;          // running average of JS time per render
     },
 

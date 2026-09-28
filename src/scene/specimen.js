@@ -98,10 +98,11 @@ export function createSpecimen(renderer, { cellTextures, displayUniforms, cellUn
     [DISH_R + 0.18, 8.05], [DISH_R, 7.7], [DISH_R, 0.3], [DISH_R - 0.4, 0.02],
   ].map(([r, y]) => new Vector2(r, y));
   const dishGeo = keep(new LatheGeometry(dishProfile.reverse(), 256));
+  const DISH_ENV = 0.75;                   // the glass's reflection of the room (setGlassGlint scales it)
   const dishMat = keep(envd(new MeshPhysicalMaterial({
     color: '#0e1210', roughness: 0.05, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.04,
     transparent: true, opacity: 0.55, depthWrite: false, side: DoubleSide,
-  }), 0.75));
+  }), DISH_ENV));
   const dishRim = addRim(dishMat, LIGHT, 1.25, 3.8);
   const dish = new Mesh(dishGeo, dishMat);
   dish.renderOrder = 5;
@@ -382,6 +383,10 @@ export function createSpecimen(renderer, { cellTextures, displayUniforms, cellUn
       key.updateMatrixWorld(); key.target.updateMatrixWorld(); fill.target.updateMatrixWorld();
       return moved;
     },
+
+    /** The dish glass's reflection (its glint of the illuminator ring), 0..1: the stage holds it down while the camera
+     *  tilts fast. */
+    setGlassGlint(a) { dishMat.envMapIntensity = DISH_ENV * a; },
 
     /** Objective fades out when the camera looks steeply down or in Apart (it would cut through the stack). */
     setObjectiveFade(a) {
